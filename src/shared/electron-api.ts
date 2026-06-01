@@ -1,4 +1,4 @@
-import type { AgentConfig, AgentError, ConfirmRequest, ProviderTestConfig, ProviderTestResult, RunStatusEvent } from './types';
+import type { AgentConfig, AgentError, CollabCliCheckResult, CollabConfig, CollabEvent, ConfirmRequest, ProviderTestConfig, ProviderTestResult, RunStatusEvent } from './types';
 import type { ImAuthState, ImConversation, ImFriend, ImFriendRequest, ImMessage, ImMessageAttachment, ImSendMessageInput } from './im-types';
 
 export interface FileEntry {
@@ -33,6 +33,7 @@ export interface AppConfigView {
     findMaxDepth?: number;
     favorites?: string[];
   };
+  collab?: CollabConfig;
   deepseekApiKey?: string;
   anthropicApiKey?: string;
 }
@@ -132,6 +133,17 @@ export interface ElectronAPI {
   onQueuedMessageStart: (cb: (sid: string, data: unknown) => void) => Unsubscribe;
   onQueuedCount: (cb: (sid: string, count: number) => void) => Unsubscribe;
   onError: (cb: (sid: string, error: string | AgentError) => void) => Unsubscribe;
+
+  getCollabConfig: () => Promise<CollabConfig>;
+  setCollabConfig: (config: Partial<CollabConfig>) => Promise<CollabConfig>;
+  checkCollabCli: (config?: Partial<CollabConfig>) => Promise<CollabCliCheckResult>;
+  getCollabSessionStatus: (sessionId: string) => Promise<unknown>;
+  listCollabTasks: (sessionId: string) => Promise<unknown[]>;
+  abortCollabTask: (taskId: string) => Promise<void>;
+  retryCollabTask: (taskId: string, phase?: string) => Promise<unknown>;
+  approveCollabTask: (taskId: string) => Promise<unknown>;
+  onCollabEvent: (cb: (event: CollabEvent) => void) => Unsubscribe;
+  onCollabConfigUpdated: (cb: (config: CollabConfig) => void) => Unsubscribe;
 
   getConfig: () => Promise<AppConfigView>;
   setConfig: (key: string, value: unknown) => Promise<void>;

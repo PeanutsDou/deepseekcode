@@ -1,3 +1,5 @@
+import type { CollabCodexModel } from './collab';
+
 // --- Messages ---
 
 export interface ToolCall {
@@ -141,6 +143,48 @@ export interface AgentError {
 
 export interface RunStatusEvent extends Partial<RunState> {
   phase: RunPhase;
+}
+
+// --- Model Collaboration ---
+
+export interface CollabConfig {
+  enabled: boolean;
+  codexCommand: string;
+  claudeCommand: string;
+  codexModel: CollabCodexModel;
+  claudeModel: string;
+  codexEffort: 'minimal' | 'low' | 'medium' | 'high';
+  writePolicy: 'workspaceLock';
+}
+
+export interface CollabCliCheckItem {
+  command: string;
+  ok: boolean;
+  version?: string;
+  error?: string;
+}
+
+export interface CollabCliCheckResult {
+  ok: boolean;
+  codex: CollabCliCheckItem;
+  claude: CollabCliCheckItem;
+}
+
+export interface CollabEvent {
+  sessionId: string;
+  collabSessionId?: string;
+  taskId?: string;
+  runId?: string;
+  agentRole: 'neck' | 'codex' | 'claude';
+  type: string;
+  phase: string;
+  status?: string;
+  model?: string;
+  message?: string;
+  artifactType?: string;
+  artifactPath?: string;
+  payload?: Record<string, unknown>;
+  createdAt: number;
 }
 
 // --- Permission / Confirmation ---

@@ -1,5 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import type { ProviderTestResult } from '../../shared/types';
+import type { CollabCliCheckResult, CollabConfig, ProviderTestResult } from '../../shared/types';
+import { CODEX_COLLAB_MODELS } from '../../shared/collab';
+import { useCollabStore } from '../stores/collab-store';
 
 interface Props {
   open: boolean;
@@ -36,6 +38,8 @@ interface QuickLauncherSettings {
 }
 
 export function SettingsDialog({ open, onClose }: Props) {
+  const setGlobalCollabConfig = useCollabStore(s => s.setConfig);
+  const setGlobalCollabCheck = useCollabStore(s => s.setCliCheck);
   const [providerList, setProviderList] = useState<ProviderItem[]>([]);
 
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -66,6 +70,11 @@ export function SettingsDialog({ open, onClose }: Props) {
     modelId: 'deepseek-v4-flash',
     findMaxDepth: 4,
   });
+  const [collabConfig, setCollabConfig] = useState<CollabConfig | null>(null);
+  const [collabCheck, setCollabCheck] = useState<CollabCliCheckResult | null>(null);
+  const [collabChecking, setCollabChecking] = useState(false);
+  const [collabError, setCollabError] = useState<string | null>(null);
+  const [collabModelsOpen, setCollabModelsOpen] = useState(false);
 
   useEffect(() => {
     if (!open) return;
@@ -83,6 +92,8 @@ export function SettingsDialog({ open, onClose }: Props) {
       window.electronAPI.getPetStatus?.().then((enabled: boolean) => setPetEnabled(Boolean(enabled))).catch(() => {});
       window.electronAPI.getPetTheme?.().then((t: string) => setPetTheme(t || 'clawd')).catch(() => {});
       const quick = cfg.quickLauncher || {};
+      setCollabConfig(cfg.collab || null);
+      setGlobalCollabConfig(cfg.collab || null);
       setQuickLauncher({
         enabled: quick.enabled !== false,
         triggerWindowMs: typeof quick.triggerWindowMs === 'number' ? quick.triggerWindowMs : 400,
@@ -92,6 +103,48 @@ export function SettingsDialog({ open, onClose }: Props) {
         findMaxDepth: typeof quick.findMaxDepth === 'number' ? quick.findMaxDepth : 4,
       });
     } catch { /* */ }
+  };
+
+  const updateCollab = async (patch: Partial<CollabConfig>) => {
+    const base = collabConfig || await window.electronAPI.getCollabConfig();
+    const next = { ...base, ...patch };
+    const cliCommandChanged = patch.codexCommand !== undefined || patch.claudeCommand !== undefined;
+    setCollabConfig(next);
+    setCollabError(null);
+    if (cliCommandChanged) {
+      setCollabCheck(null);
+      setGlobalCollabCheck(null);
+    }
+    try {
+      const saved = await window.electronAPI.setCollabConfig(next);
+      setCollabConfig(saved);
+      setGlobalCollabConfig(saved);
+    } catch (err) {
+      setCollabError(err instanceof Error ? err.message : String(err));
+      const saved = await window.electronAPI.getCollabConfig();
+      setCollabConfig(saved);
+      setGlobalCollabConfig(saved);
+    }
+  };
+
+  const checkCollab = async () => {
+    if (!collabConfig) return;
+    setCollabChecking(true);
+    setCollabError(null);
+    try {
+      const result = await window.electronAPI.checkCollabCli(collabConfig);
+      setCollabCheck(result);
+      setGlobalCollabCheck(result);
+      if (!result.ok && collabConfig.enabled) {
+        const saved = await window.electronAPI.getCollabConfig();
+        setCollabConfig(saved);
+        setGlobalCollabConfig(saved);
+      }
+    } catch (err) {
+      setCollabError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setCollabChecking(false);
+    }
   };
 
   const updateQuickLauncher = async (patch: Partial<QuickLauncherSettings>) => {
@@ -442,6 +495,89 @@ export function SettingsDialog({ open, onClose }: Props) {
                   </>
                 )}
               </div>
+              {collabConfig && (
+                <div className="quick-settings-card">
+                  <div className="quick-settings-title">模型协同</div>
+                  <label className="settings-label">Codex CLI
+                    <input
+                      className="settings-input"
+                      value={collabConfig.codexCommand}
+                      onChange={e => setCollabConfig({ ...collabConfig, codexCommand: e.target.value })}
+                      onBlur={() => void updateCollab({ codexCommand: collabConfig.codexCommand, enabled: false })}
+                    />
+                  </label>
+                  <label className="settings-label">Claude Code CLI
+                    <input
+                      className="settings-input"
+                      value={collabConfig.claudeCommand}
+                      onChange={e => setCollabConfig({ ...collabConfig, claudeCommand: e.target.value })}
+                      onBlur={() => void updateCollab({ claudeCommand: collabConfig.claudeCommand, enabled: false })}
+                    />
+                  </label>
+                  <div className="collab-model-config-row">
+                    <button
+                      type="button"
+                      className="settings-btn-sm"
+                      onClick={() => setCollabModelsOpen(v => !v)}
+                    >
+                      {collabModelsOpen ? '收起协同模型配置' : '配置协同模型'}
+                    </button>
+                    <span>
+                      Claude: {collabConfig.claudeModel} · Codex: {collabConfig.codexModel || '默认配置'} / {collabConfig.codexEffort}
+                    </span>
+                  </div>
+                  {collabModelsOpen && (
+                    <div className="collab-model-config-panel">
+                      <label className="settings-label">Claude 执行模型
+                        <select
+                          className="settings-input"
+                          value={collabConfig.claudeModel}
+                          onChange={e => void updateCollab({ claudeModel: e.target.value })}
+                        >
+                          <option value="deepseek-v4-pro">deepseek-v4-pro</option>
+                          <option value="deepseek-v4-flash">deepseek-v4-flash</option>
+                        </select>
+                      </label>
+                      <div className="settings-hint">Claude Code 思考力度固定为 max。</div>
+                      <label className="settings-label">Codex 模型
+                        <select
+                          className="settings-input"
+                          value={collabConfig.codexModel}
+                          onChange={e => void updateCollab({ codexModel: e.target.value as CollabConfig['codexModel'] })}
+                        >
+                          {CODEX_COLLAB_MODELS.map(model => (
+                            <option key={model.value || 'default'} value={model.value}>{model.label}</option>
+                          ))}
+                        </select>
+                      </label>
+                      <div className="settings-hint">Codex 规划和审查共用同一个模型。</div>
+                      <label className="settings-label">Codex 思考力度
+                        <select
+                          className="settings-input"
+                          value={collabConfig.codexEffort}
+                          onChange={e => void updateCollab({ codexEffort: e.target.value as CollabConfig['codexEffort'] })}
+                        >
+                          <option value="minimal">minimal</option>
+                          <option value="low">low</option>
+                          <option value="medium">medium</option>
+                          <option value="high">high</option>
+                        </select>
+                      </label>
+                    </div>
+                  )}
+                  <button className="settings-btn-sm" onClick={checkCollab} disabled={collabChecking}>
+                    {collabChecking ? '检测中...' : '检测 Codex / Claude Code'}
+                  </button>
+                  {collabCheck && (
+                    <div className={`collab-check-result ${collabCheck.ok ? 'ok' : 'fail'}`}>
+                      <div>Codex: {collabCheck.codex.ok ? '可用' : '不可用'}</div>
+                      <div>Claude Code: {collabCheck.claude.ok ? '可用' : '不可用'}</div>
+                      {!collabCheck.ok && <span>任一 CLI 不可调用时，主界面协同开关会保持禁用。</span>}
+                    </div>
+                  )}
+                  {collabError && <div className="balance-error">{collabError}</div>}
+                </div>
+              )}
             </div>
           </div>
 

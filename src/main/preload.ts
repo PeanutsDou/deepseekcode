@@ -70,6 +70,26 @@ const api = {
     return () => { ipcRenderer.removeListener('agent:error', listener); };
   },
 
+  // Model collaboration
+  getCollabConfig: () => ipcRenderer.invoke('collab:get-config'),
+  setCollabConfig: (config: unknown) => ipcRenderer.invoke('collab:set-config', config),
+  checkCollabCli: (config?: unknown) => ipcRenderer.invoke('collab:check-cli', config),
+  getCollabSessionStatus: (sessionId: string) => ipcRenderer.invoke('collab:get-session-status', sessionId),
+  listCollabTasks: (sessionId: string) => ipcRenderer.invoke('collab:list-tasks', sessionId),
+  abortCollabTask: (taskId: string) => ipcRenderer.invoke('collab:abort-task', taskId),
+  retryCollabTask: (taskId: string, phase?: string) => ipcRenderer.invoke('collab:retry-task', taskId, phase),
+  approveCollabTask: (taskId: string) => ipcRenderer.invoke('collab:approve-task', taskId),
+  onCollabEvent: (cb: (event: unknown) => void) => {
+    const listener = (_event: unknown, event: unknown) => cb(event);
+    ipcRenderer.on('collab:event', listener);
+    return () => { ipcRenderer.removeListener('collab:event', listener); };
+  },
+  onCollabConfigUpdated: (cb: (config: unknown) => void) => {
+    const listener = (_event: unknown, config: unknown) => cb(config);
+    ipcRenderer.on('collab:config-updated', listener);
+    return () => { ipcRenderer.removeListener('collab:config-updated', listener); };
+  },
+
   // Config
   getConfig: () => ipcRenderer.invoke('config:get'),
   setConfig: (key: string, value: unknown) => ipcRenderer.invoke('config:set', key, value),

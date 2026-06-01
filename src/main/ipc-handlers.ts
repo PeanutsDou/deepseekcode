@@ -43,6 +43,10 @@ import { APP_DATA_DIR_NAME, LEGACY_APP_DATA_DIR_NAME, legacyUserDataDir, userDat
 import { addToTotalSessionCost, calculateUSDCost, getCostSummary, resetCostState, getCostStateSnapshot, restoreCostState, type StoredCostState } from './cost-tracker';
 import { triggerHooks, triggerHooksSync } from './hooks';
 import { listTasksSnapshot, onTasksChanged } from './tools/task-tools';
+import { normalizeCollabConfig } from './collab/config';
+import { checkCollabCli } from './collab/check';
+import { abortCollabTask, approveCollabTask, closeCollabForSession, onCollabEvent, retryCollabTask, runCollabTask } from './collab/orchestrator';
+import { getSessionStatus as getCollabSessionStatus, listTaskViews as listCollabTaskViews } from './collab/store';
 
 let agentMdContent = '';
 let agentMdFiles: string[] = [];
@@ -413,6 +417,10 @@ export function setupIpcHandlers(
   getProvider: (modelId?: string, options?: { stream?: boolean; maxTokens?: number }) => Provider,
   getTools: (sessionId?: string) => ToolRegistry,
 ) {
+  onCollabEvent((event) => {
+    getWindow()?.webContents.send('collab:event', event);
+  });
+
   function getSessionModelId(sessionId?: string): string {
     const cfg = getConfig();
     if (!sessionId) return cfg.activeModel;
@@ -669,6 +677,62 @@ export function setupIpcHandlers(
     }
   }
 
+  async function runCollabTurnWithStreaming(
+    sessionId: string,
+    message: string,
+    attachments: { type: string; data: string; mimeType: string }[],
+    abortCtrl: AbortController,
+  ) {
+    try {
+      emitRunStatus(sessionId, { phase: 'starting', startedAt: Date.now(), inputTokens: 0, outputTokens: 0, currentTool: 'model_collaboration', lastTool: null, errorCode: null });
+      claimPetSession(sessionId);
+      setPetState('thinking');
+      sayPet('模型协同中...');
+      const cfg = getConfig();
+      const result = await runCollabTask({
+        sessionId,
+        userMessage: message,
+        attachments: normalizeAttachments(attachments),
+        workspaceRoot: cfg.agent.workspaceRoot,
+        config: cfg.collab,
+        signal: abortCtrl.signal,
+      });
+      emitRunStatus(sessionId, { phase: 'finishing', currentTool: null, lastTool: 'model_collaboration' });
+      releasePetSession(sessionId);
+      getWindow()?.webContents.send('agent:turn-done', sessionId, {
+        text: result.finalText,
+        toolCalls: [],
+      });
+      requestWindowAttention();
+      return result;
+    } catch (err) {
+      const agentError = classifyAgentError(err);
+      emitRunStatus(sessionId, { phase: agentError.code === 'aborted' ? 'aborted' : 'error', errorCode: agentError.code, currentTool: null });
+      releasePetSession(sessionId);
+      if (agentError.code !== 'aborted') getWindow()?.webContents.send('agent:error', sessionId, agentError);
+      return null;
+    }
+  }
+
+  function isCollabEnabled(): boolean {
+    return getConfig().collab.enabled === true;
+  }
+
+  async function runUserMessageByMode(
+    sessionId: string,
+    message: string,
+    attachments: { type: string; data: string; mimeType: string }[],
+    abortCtrl: AbortController,
+  ): Promise<unknown> {
+    if (isCollabEnabled()) {
+      return runCollabTurnWithStreaming(sessionId, message, attachments, abortCtrl);
+    }
+    const p = getProvider(getSessionModelId(sessionId));
+    if (!p) throw new Error('No provider configured');
+    const sessionAgent = getOrCreateSessionAgent(sessionId);
+    return runAgentTurnWithStreaming(sessionId, sessionAgent, message, attachments, abortCtrl);
+  }
+
   function getOrCreateSessionAgent(sessionId: string): AgentRuntime {
     const existing = sessionAgents.get(sessionId);
     if (existing) {
@@ -706,10 +770,7 @@ export function setupIpcHandlers(
     if (!queued) return;
     emitQueuedMessageStart(sessionId, queued);
     void runAgentTurnSerial(sessionId, async (abortCtrl) => {
-      const p = getProvider(getSessionModelId(sessionId));
-      if (!p) throw new Error('No provider configured');
-      const sessionAgent = getOrCreateSessionAgent(sessionId);
-      return runAgentTurnWithStreaming(sessionId, sessionAgent, queued.content, queued.attachments, abortCtrl);
+      return runUserMessageByMode(sessionId, queued.content, queued.attachments, abortCtrl);
     });
   }
 
@@ -1115,15 +1176,15 @@ function releasePetSession(sessionId: string) {
       return { queued: true, queuedId: queued.id, queuedCount: sessionQueuedTurns.get(sessionId)?.length || 0 };
     }
     return runAgentTurnSerial(sessionId, async (abortCtrl) => {
-      const p = getProvider(getSessionModelId(sessionId));
-      if (!p) throw new Error('No provider configured');
-      const sessionAgent = getOrCreateSessionAgent(sessionId);
-      return runAgentTurnWithStreaming(sessionId, sessionAgent, message, normalizedAttachments, abortCtrl);
+      return runUserMessageByMode(sessionId, message, normalizedAttachments, abortCtrl);
     });
   });
 
   ipcMain.handle('agent:regenerate', async (_event, sessionId: string, message: string, attachments: { type: string; data: string; mimeType: string }[]) => {
     return runAgentTurnSerial(sessionId, async (abortCtrl) => {
+      if (isCollabEnabled()) {
+        return runCollabTurnWithStreaming(sessionId, message, normalizeAttachments(attachments || []), abortCtrl);
+      }
       const p = getProvider(getSessionModelId(sessionId));
       if (!p) throw new Error('No provider configured');
       const sessionAgent = getOrCreateSessionAgent(sessionId);
@@ -1265,6 +1326,7 @@ function releasePetSession(sessionId: string) {
       codeLeftWidth: cfg.codeLeftWidth,
       autoLaunch: cfg.autoLaunch || false,
       quickLauncher: cfg.quickLauncher,
+      collab: cfg.collab,
       lastSeenReleaseNotesVersion: cfg.lastSeenReleaseNotesVersion,
       imAgent: cfg.imAgent,
       baseUrl: active.baseUrl,
@@ -1317,6 +1379,22 @@ function releasePetSession(sessionId: string) {
       await saveConfig();
       return;
     }
+    else if (key === 'collab') {
+      const next = normalizeCollabConfig(value);
+      if (next.enabled) {
+        const check = await checkCollabCli(next);
+        if (!check.ok) {
+          next.enabled = false;
+          cfg.collab = next;
+          await saveConfig();
+          throw new Error('模型协同需要 Codex CLI 和 Claude Code CLI 都可调用。');
+        }
+      }
+      cfg.collab = next;
+      await saveConfig();
+      getWindow()?.webContents.send('collab:config-updated', cfg.collab);
+      return;
+    }
     else if (key === 'quickLauncher') {
       const input = (value && typeof value === 'object') ? value as Record<string, unknown> : {};
       cfg.quickLauncher = {
@@ -1358,6 +1436,52 @@ function releasePetSession(sessionId: string) {
   });
 
   ipcMain.handle('config:get-full', () => getConfig());
+
+  ipcMain.handle('collab:get-config', () => getConfig().collab);
+
+  ipcMain.handle('collab:set-config', async (_event, value: unknown) => {
+    const cfg = getConfig();
+    const next = normalizeCollabConfig(value);
+    if (next.enabled) {
+      const check = await checkCollabCli(next);
+      if (!check.ok) {
+        next.enabled = false;
+        cfg.collab = next;
+        await saveConfig();
+        getWindow()?.webContents.send('collab:config-updated', cfg.collab);
+        throw new Error('模型协同需要 Codex CLI 和 Claude Code CLI 都可调用。');
+      }
+    }
+    cfg.collab = next;
+    await saveConfig();
+    getWindow()?.webContents.send('collab:config-updated', cfg.collab);
+    return cfg.collab;
+  });
+
+  ipcMain.handle('collab:check-cli', async (_event, value?: unknown) => {
+    const cfg = getConfig();
+    const target = value ? normalizeCollabConfig({ ...cfg.collab, ...(value as Record<string, unknown>) }) : cfg.collab;
+    const result = await checkCollabCli(target);
+    if (!result.ok && cfg.collab.enabled) {
+      cfg.collab = { ...cfg.collab, enabled: false };
+      await saveConfig();
+      getWindow()?.webContents.send('collab:config-updated', cfg.collab);
+    }
+    return result;
+  });
+
+  ipcMain.handle('collab:get-session-status', (_event, sessionId: string) => {
+    const cfg = getConfig();
+    return getCollabSessionStatus(cfg.collab.enabled, sessionId, cfg.agent.workspaceRoot);
+  });
+
+  ipcMain.handle('collab:list-tasks', (_event, sessionId: string) => listCollabTaskViews(sessionId));
+
+  ipcMain.handle('collab:abort-task', (_event, taskId: string) => abortCollabTask(taskId));
+
+  ipcMain.handle('collab:retry-task', async (_event, taskId: string, phase?: string) => retryCollabTask(taskId, phase));
+
+  ipcMain.handle('collab:approve-task', (_event, taskId: string) => approveCollabTask(taskId));
 
   ipcMain.handle('config:get-providers', () => {
     return getConfig().providers.map(p => ({ id: p.id, name: p.name, models: p.models.map(m => m.name) }));
@@ -1569,6 +1693,7 @@ function releasePetSession(sessionId: string) {
     sessionCompactMeta.delete(id);
     clearQueuedTurns(id);
     cancelPendingInteractionsForSession(id, 'Session deleted');
+    closeCollabForSession(id);
     deleteSession(id);
   });
 

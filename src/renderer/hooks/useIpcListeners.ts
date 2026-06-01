@@ -1,6 +1,7 @@
 import { useEffect } from 'react';
 import { useChatStore } from '../stores/chat-store';
 import { inferImageMimeType } from '../utils/attachments';
+import { refreshCollabState, useCollabStore } from '../stores/collab-store';
 
 export function useIpcListeners() {
   const store = useChatStore;
@@ -84,6 +85,42 @@ export function useIpcListeners() {
     unsubs.push(api.onError((sid, err) => {
       store.getState().setErrorTo(sid, err as any);
     }));
+    unsubs.push(api.onCollabEvent?.((event: any) => {
+      useCollabStore.getState().recordEvent(event);
+      if (event?.type === 'task_created' && event?.sessionId) {
+        store.getState().addEntryTo(event.sessionId, {
+          id: `collab_task_${event.id || event.taskId || Date.now()}`,
+          role: 'system',
+          content: `协同任务已创建：${String(event.taskId || '').slice(0, 8)}`,
+          timestamp: event.createdAt || Date.now(),
+        });
+      }
+      if (event?.type === 'cli_tool' && event?.sessionId) {
+        store.getState().addEntryTo(event.sessionId, {
+          id: `collab_tool_${event.id || Date.now()}`,
+          role: 'tool',
+          content: event.message || '',
+          toolName: 'collab_tool',
+          toolArgs: JSON.stringify({
+            agent: event.agentRole === 'claude' ? 'Claude Code' : event.agentRole === 'codex' ? 'Codex' : 'Neck',
+            action: event.payload?.summary || event.message || '',
+          }),
+          toolResult: event.message || '',
+          timestamp: event.createdAt || Date.now(),
+        });
+      } else if (['cli_output', 'retry_started', 'review_needs_fix'].includes(event?.type) && event?.sessionId && event?.message) {
+        store.getState().addEntryTo(event.sessionId, {
+          id: `collab_event_${event.id || Date.now()}`,
+          role: 'system',
+          content: event.message,
+          timestamp: event.createdAt || Date.now(),
+        });
+      }
+      if (event?.sessionId) void refreshCollabState(event.sessionId);
+    }) || (() => {}));
+    unsubs.push(api.onCollabConfigUpdated?.((config: any) => {
+      useCollabStore.getState().setConfig(config);
+    }) || (() => {}));
 
     return () => { unsubs.forEach(fn => fn()); };
   }, []);

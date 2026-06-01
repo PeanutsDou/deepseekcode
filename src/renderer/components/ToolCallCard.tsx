@@ -26,6 +26,7 @@ const TOOL_META: Record<string, { icon: string; label: string; color: string }> 
   list_skills: { icon: '*', label: 'Skills', color: '#a6adc8' },
   invoke_skill: { icon: '*', label: 'Skill', color: '#a6adc8' },
   invoke_agent: { icon: 'A', label: 'Agent', color: '#6a8fba' },
+  collab_tool: { icon: 'M', label: '协同工具', color: '#6a8fba' },
 };
 
 const LARGE_TOOL_RESULT_THRESHOLD = 30_000;
@@ -36,6 +37,9 @@ function formatArgs(args: string | undefined, maxLen = 120): string {
   if (!args) return '';
   try {
     const obj = JSON.parse(args);
+    if (obj && typeof obj === 'object' && 'agent' in obj && 'action' in obj) {
+      return `${obj.agent} · ${obj.action}`.slice(0, maxLen);
+    }
     const flat = Object.entries(obj)
       .map(([k, v]) => `${k}=${typeof v === 'string' ? v.slice(0, 40) : JSON.stringify(v)}`)
       .join(', ');

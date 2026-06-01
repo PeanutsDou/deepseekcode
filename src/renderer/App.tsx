@@ -10,7 +10,6 @@ import { AskDialog } from './components/AskDialog';
 import { SkillsDialog } from './components/SkillsDialog';
 import { MemoryDialog } from './components/MemoryDialog';
 import { AgentDialog } from './components/AgentDialog';
-import { TaskProgressFloat } from './components/TaskProgressFloat';
 import { WorkspaceBar } from './components/WorkspaceBar';
 import { ImageViewer } from './components/ImageViewer';
 import { CloseDialog } from './components/CloseDialog';
@@ -372,7 +371,6 @@ export default function App() {
 
               <div className="chat-main">
                 <ChatPanel />
-                <TaskProgressFloat />
               </div>
             </div>
           );

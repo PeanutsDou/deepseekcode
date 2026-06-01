@@ -5,6 +5,8 @@ import { encrypt, decrypt } from './config/secrets';
 import type { PermissionMode } from '../shared/permissions';
 import type { AgentConfig } from '../shared/types';
 import { ensureUserDataDirMigrated, userDataDir } from './app-paths';
+import { DEFAULT_COLLAB_CONFIG, normalizeCollabConfig } from './collab/config';
+import type { CollabConfig } from './collab/types';
 
 export type ModelMode = 'text' | 'multimodal';
 
@@ -67,6 +69,7 @@ export interface AppConfigData {
     favorites?: string[];
   };
   agents: AgentConfig[];
+  collab: CollabConfig;
 }
 
 const CONFIG_DIR = userDataDir();
@@ -197,6 +200,7 @@ const defaultConfig: AppConfigData = {
     allowSessionPreview: false,
   },
   agents: [],
+  collab: DEFAULT_COLLAB_CONFIG,
 };
 
 let config: AppConfigData = cloneDefaultConfig();
@@ -221,6 +225,7 @@ function cloneDefaultConfig(): AppConfigData {
     quickLauncher: defaultConfig.quickLauncher ? { ...defaultConfig.quickLauncher } : undefined,
     imAgent: defaultConfig.imAgent ? { ...defaultConfig.imAgent } : undefined,
     agents: defaultConfig.agents.map(agent => ({ ...agent, skills: [...agent.skills] })),
+    collab: { ...defaultConfig.collab },
   };
 }
 
@@ -308,6 +313,7 @@ function normalizeLoadedConfig(loaded: AppConfigData): AppConfigData {
     loaded.providers = DEFAULT_PROVIDERS.map(cloneProvider);
   }
   loaded.permissionMode = normalizePermissionMode(loaded.permissionMode);
+  loaded.collab = normalizeCollabConfig((loaded as unknown as Record<string, unknown>).collab);
   loaded.autoLaunch = typeof loaded.autoLaunch === 'boolean' ? loaded.autoLaunch : defaultConfig.autoLaunch;
   loaded.agents = normalizeAgents(loaded.agents);
   const rawImAgent: Record<string, unknown> = isRecord(loaded.imAgent) ? loaded.imAgent : {};
@@ -422,6 +428,7 @@ function migrateLegacy(raw: Record<string, unknown>): AppConfigData {
       ...cleanedRaw,
       providers: providers.length > 0 ? providers : DEFAULT_PROVIDERS.map(cloneProvider),
       agent: { ...defaultConfig.agent, ...(isRecord(cleanedRaw.agent) ? cleanedRaw.agent : {}) },
+      collab: normalizeCollabConfig(cleanedRaw.collab),
     } as AppConfigData);
   }
 
@@ -448,6 +455,7 @@ function migrateLegacy(raw: Record<string, unknown>): AppConfigData {
     providers,
     activeModel: (cleanedRaw.activeModel as string) || defaultConfig.activeModel,
     agent: { ...defaultConfig.agent, ...(isRecord(cleanedRaw.agent) ? cleanedRaw.agent : {}) },
+    collab: normalizeCollabConfig(cleanedRaw.collab),
     deepseek: undefined,
     anthropic: undefined,
   } as unknown as AppConfigData);

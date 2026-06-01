@@ -4,6 +4,8 @@ import { useAppStore } from '../stores/app-store';
 import { CustomSelect } from './CustomSelect';
 import { PermissionToggle } from './PermissionToggle';
 import { inferImageMimeType } from '../utils/attachments';
+import { CollabModeToggle } from './CollabModeToggle';
+import { CollabAgentStrip } from './CollabAgentStrip';
 
 interface SlashCommand {
   name: string;
@@ -276,79 +278,85 @@ export function ChatInput() {
   return (
     <div className="chat-input-area" onDrop={handleDrop} onDragOver={e => e.preventDefault()}>
       <div className="input-resize-handle" onMouseDown={handleResizeStart} />
-      <div className="chat-input-wrapper">
-        {showCommands && filteredCommands.length > 0 && (
-          <div className="slash-commands" ref={cmdListRef}>
-            {filteredCommands.map((cmd, i) => (
-              <div key={cmd.name} className={`slash-command-item ${i === commandIdx ? 'active' : ''}`}
-                onClick={() => executeCommand(cmd)}>
-                <span className="slash-command-name">{cmd.name}</span>
-                <span className="slash-command-desc">{cmd.desc}</span>
-              </div>
-            ))}
-          </div>
-        )}
-        {pendingContext && (
-          <div className="pending-context">
-            <span className="pending-context-label">上下文</span>
-            <span className="pending-context-preview">{pendingContext.slice(0, 80)}{pendingContext.length > 80 ? '...' : ''}</span>
-            <button className="pending-context-dismiss" onClick={() => setPendingContext(null)}>&times;</button>
-          </div>
-        )}
-        {queuedCount > 0 && (
-          <div className="pending-context pending-send">
-            <span className="pending-context-label">待发送</span>
-            <span className="pending-context-preview">{queuedCount} 条消息将在下一个安全间隙发送</span>
-          </div>
-        )}
-        {images.length > 0 && (
-          <div className="image-previews">
-            {images.map((img, i) => (
-              <div key={i} className="image-preview-item">
-                <img src={img.data} alt={img.name} className="image-preview-thumb" />
-                <span className="image-preview-name">{img.name}</span>
-                <button className="pending-context-dismiss" onClick={() => setImages(prev => prev.filter((_, j) => j !== i))}>&times;</button>
-              </div>
-            ))}
-          </div>
-        )}
-        <textarea ref={inputRef} className="chat-input" value={text}
-          onChange={handleChange} onKeyDown={handleKeyDown} onPaste={handlePaste}
-          placeholder="输入消息，Enter 发送，/ 命令"
-          style={{ height: inputHeight }} />
+      <div className="input-row">
+        <div className="chat-input-wrapper">
+          {showCommands && filteredCommands.length > 0 && (
+            <div className="slash-commands" ref={cmdListRef}>
+              {filteredCommands.map((cmd, i) => (
+                <div key={cmd.name} className={`slash-command-item ${i === commandIdx ? 'active' : ''}`}
+                  onClick={() => executeCommand(cmd)}>
+                  <span className="slash-command-name">{cmd.name}</span>
+                  <span className="slash-command-desc">{cmd.desc}</span>
+                </div>
+              ))}
+            </div>
+          )}
+          {pendingContext && (
+            <div className="pending-context">
+              <span className="pending-context-label">上下文</span>
+              <span className="pending-context-preview">{pendingContext.slice(0, 80)}{pendingContext.length > 80 ? '...' : ''}</span>
+              <button className="pending-context-dismiss" onClick={() => setPendingContext(null)}>&times;</button>
+            </div>
+          )}
+          {queuedCount > 0 && (
+            <div className="pending-context pending-send">
+              <span className="pending-context-label">待发送</span>
+              <span className="pending-context-preview">{queuedCount} 条消息将在下一个安全间隙发送</span>
+            </div>
+          )}
+          {images.length > 0 && (
+            <div className="image-previews">
+              {images.map((img, i) => (
+                <div key={i} className="image-preview-item">
+                  <img src={img.data} alt={img.name} className="image-preview-thumb" />
+                  <span className="image-preview-name">{img.name}</span>
+                  <button className="pending-context-dismiss" onClick={() => setImages(prev => prev.filter((_, j) => j !== i))}>&times;</button>
+                </div>
+              ))}
+            </div>
+          )}
+          <textarea ref={inputRef} className="chat-input" value={text}
+            onChange={handleChange} onKeyDown={handleKeyDown} onPaste={handlePaste}
+            placeholder="输入消息，Enter 发送，/ 命令"
+            style={{ height: inputHeight }} />
 
-        <div className="input-controls">
-          <PermissionToggle />
-          <CustomSelect
-            value={currentModel}
-            options={availableModels}
-            onOpen={refreshModels}
-            onChange={(m) => {
-              const sid = getSessionId();
-              if (sid) {
-                useChatStore.getState().setSessionModelTo(sid, m);
-                window.electronAPI?.setSessionModel?.(sid, m);
-              } else {
-                setModel(m);
-                window.electronAPI?.setConfig('model', m);
-              }
-            }}
-          />
+          <div className="input-controls">
+            <PermissionToggle />
+            <CustomSelect
+              value={currentModel}
+              options={availableModels}
+              onOpen={refreshModels}
+              onChange={(m) => {
+                const sid = getSessionId();
+                if (sid) {
+                  useChatStore.getState().setSessionModelTo(sid, m);
+                  window.electronAPI?.setSessionModel?.(sid, m);
+                } else {
+                  setModel(m);
+                  window.electronAPI?.setConfig('model', m);
+                }
+              }}
+            />
 
-          {isStreaming && (
-            <button className="send-btn sending" onClick={handleStop} title="停止">
-              <svg width="10" height="10" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.5">
-                <rect x="2" y="2" width="8" height="8" rx="1.5" />
+            {isStreaming && (
+              <button className="send-btn sending" onClick={handleStop} title="停止">
+                <svg width="10" height="10" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.5">
+                  <rect x="2" y="2" width="8" height="8" rx="1.5" />
+                </svg>
+              </button>
+            )}
+            <button className="send-btn" onClick={handleSend} disabled={!canSend} title={isStreaming ? '排队发送（下一个安全间隙发送）' : '发送'}>
+              <svg width="11" height="11" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                <line x1="7" y1="11" x2="7" y2="3" />
+                <polyline points="4,6 7,3 10,6" />
               </svg>
             </button>
-          )}
-          <button className="send-btn" onClick={handleSend} disabled={!canSend} title={isStreaming ? '排队发送（下一个安全间隙发送）' : '发送'}>
-            <svg width="11" height="11" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-              <line x1="7" y1="11" x2="7" y2="3" />
-              <polyline points="4,6 7,3 10,6" />
-            </svg>
-          </button>
+          </div>
         </div>
+      </div>
+      <div className="collab-inline-row">
+        <CollabAgentStrip />
+        <CollabModeToggle />
       </div>
     </div>
   );

@@ -1,0 +1,48 @@
+[
+  {
+    "name": "run_shell",
+    "description": "执行一个 Shell 命令（Windows PowerShell）。用于：启动程序、管理文件、查询系统信息、调用第三方工具等。命令在工作区目录下执行。输出字符数限制为 8000。",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "command": {
+          "type": "string",
+          "description": "要执行的 Shell 命令"
+        }
+      },
+      "required": ["command"]
+    }
+  },
+  {
+    "name": "read_file",
+    "description": "读取工作区内任意文件的内容。用于：查看代码、阅读文档、检查配置文件等。",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string",
+          "description": "相对于工作区的文件路径，或绝对路径"
+        }
+      },
+      "required": ["path"]
+    }
+  },
+  {
+    "name": "write_file",
+    "description": "在工作区内写入任意类型的文件。支持 .py / .bat / .ps1 / .txt / .json / .csv 等。写入后，脚本类文件（.py .bat .ps1）自动成为可调用工具（工具名 = 文件名去掉后缀）。",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "filename": {
+          "type": "string",
+          "description": "文件名，如 'scan.py', 'kill.bat', 'data.json'"
+        },
+        "content": {
+          "type": "string",
+          "description": "完整的文件内容"
+        }
+      },
+      "required": ["filename", "content"]
+    }
+  }
+]

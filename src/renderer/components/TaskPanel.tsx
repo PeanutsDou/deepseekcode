@@ -1,4 +1,6 @@
 import React, { useEffect, useState } from 'react';
+import { useChatStore } from '../stores/chat-store';
+import { EMPTY_COLLAB_TASKS, refreshCollabState, useCollabStore, type CollabTaskView } from '../stores/collab-store';
 
 interface AgentTask {
   id: string;
@@ -20,6 +22,8 @@ function statusLabel(status: AgentTask['status']): string {
 
 export function TaskPanel({ open, onClose }: { open: boolean; onClose: () => void }) {
   const [tasks, setTasks] = useState<AgentTask[]>([]);
+  const activeId = useChatStore(s => s.activeId);
+  const collabTasks = useCollabStore(s => activeId ? s.tasks[activeId] || EMPTY_COLLAB_TASKS : EMPTY_COLLAB_TASKS);
 
   useEffect(() => {
     if (!open) return;
@@ -29,6 +33,11 @@ export function TaskPanel({ open, onClose }: { open: boolean; onClose: () => voi
     });
     return () => unsub?.();
   }, [open]);
+
+  useEffect(() => {
+    if (!open || !activeId) return;
+    void refreshCollabState(activeId);
+  }, [open, activeId]);
 
   if (!open) return null;
 
@@ -43,7 +52,33 @@ export function TaskPanel({ open, onClose }: { open: boolean; onClose: () => voi
           <button className="settings-close" onClick={onClose}>&times;</button>
         </div>
         <div className="settings-body task-panel-body">
-          {tasks.length === 0 && <div className="md-empty">当前没有 Agent 任务。</div>}
+          {tasks.length === 0 && collabTasks.length === 0 && <div className="md-empty">当前没有 Agent 任务。</div>}
+
+          {collabTasks.length > 0 && <div className="md-section-title">模型协同任务</div>}
+          {collabTasks.map((task: CollabTaskView) => (
+            <div className={`task-panel-item collab-task-panel-item collab-task-${task.status}`} key={task.id}>
+              <div className="task-panel-row">
+                <span className={`task-panel-status task-panel-status-${task.status === 'approved' ? 'completed' : task.status === 'failed' ? 'failed' : 'in_progress'}`}>
+                  {task.status}
+                </span>
+                <strong>{task.userMessage.slice(0, 80) || task.id}</strong>
+              </div>
+              <div className="collab-task-phases">
+                {task.agents.map(agent => (
+                  <span key={`${task.id}-${agent.role}`} className={`collab-task-phase collab-task-phase-${agent.status}`}>
+                    {agent.label}: {agent.phase}
+                  </span>
+                ))}
+              </div>
+              {task.lastEvent?.message && <div className="task-panel-desc">{task.lastEvent.message}</div>}
+              {task.artifacts.length > 0 && (
+                <div className="task-panel-meta">
+                  {task.artifacts.map(artifact => `${artifact.type}: ${artifact.path.split(/[\\/]/).pop()}`).join(' | ')}
+                </div>
+              )}
+            </div>
+          ))}
+
           {active.length > 0 && <div className="md-section-title">当前任务</div>}
           {active.map(task => (
             <div className="task-panel-item" key={task.id}>
@@ -55,6 +90,7 @@ export function TaskPanel({ open, onClose }: { open: boolean; onClose: () => voi
               {task.blockedBy.length > 0 && <div className="task-panel-meta">阻塞于：{task.blockedBy.map(id => id.slice(0, 8)).join(', ')}</div>}
             </div>
           ))}
+
           {completed.length > 0 && <div className="md-section-title">已完成</div>}
           {completed.map(task => (
             <div className="task-panel-item completed" key={task.id}>

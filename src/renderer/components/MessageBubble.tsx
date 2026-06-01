@@ -30,11 +30,34 @@ function makeTextPreview(text: string): string {
   ].join('\n');
 }
 
+const markdownComponents = {
+  code({ className, children, ...props }: any) {
+    const match = /language-(\w+)/.exec(className || '');
+    const lang = match?.[1];
+    const code = String(children).replace(/\n$/, '');
+
+    if (lang === 'mermaid') {
+      return <MermaidBlock code={code} />;
+    }
+
+    if (className) {
+      return (
+        <pre><code className={className} {...props}>
+          {children}
+        </code></pre>
+      );
+    }
+
+    return <code {...props}>{children}</code>;
+  },
+};
+
 export const MessageBubble = memo(function MessageBubble({ entry }: Props) {
   const [copied, setCopied] = useState(false);
   const [showFullContent, setShowFullContent] = useState(false);
   const isLongContent = entry.content.length > LONG_MESSAGE_THRESHOLD;
   const visibleContent = isLongContent && !showFullContent ? makeTextPreview(entry.content) : entry.content;
+  const isCollabSystem = entry.role === 'system' && entry.id.startsWith('collab_');
 
   const handleCopy = useCallback(async () => {
     try {
@@ -128,8 +151,16 @@ export const MessageBubble = memo(function MessageBubble({ entry }: Props) {
 
   if (entry.role === 'system') {
     return (
-      <div className="message message-system" style={{ fontSize: 11, color: 'var(--text-muted)', padding: '4px 14px' }}>
-        <div className="message-content">{entry.content}</div>
+      <div className={`message message-system ${isCollabSystem ? 'message-collab-system' : ''}`}>
+        <div className="message-content">
+          {isCollabSystem ? (
+            <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]} components={markdownComponents}>
+              {entry.content}
+            </ReactMarkdown>
+          ) : (
+            entry.content
+          )}
+        </div>
       </div>
     );
   }
@@ -176,27 +207,7 @@ export const MessageBubble = memo(function MessageBubble({ entry }: Props) {
           ) : (
             <ReactMarkdown
               remarkPlugins={[remarkGfm, remarkBreaks]}
-              components={{
-                code({ className, children, ...props }) {
-                  const match = /language-(\w+)/.exec(className || '');
-                  const lang = match?.[1];
-                  const code = String(children).replace(/\n$/, '');
-
-                  if (lang === 'mermaid') {
-                    return <MermaidBlock code={code} />;
-                  }
-
-                  if (className) {
-                    return (
-                      <pre><code className={className} {...props}>
-                        {children}
-                      </code></pre>
-                    );
-                  }
-
-                  return <code {...props}>{children}</code>;
-                },
-              }}
+              components={markdownComponents}
             >
               {visibleContent}
             </ReactMarkdown>
