@@ -23,7 +23,7 @@ export interface CollabTaskView {
   createdAt: number;
   updatedAt: number;
   agents: CollabAgentStatusView[];
-  artifacts: Array<{ type: string; path: string; createdAt: number }>;
+  artifacts: Array<{ id: string; type: string; path: string; createdAt: number }>;
   lastEvent?: CollabEvent;
 }
 

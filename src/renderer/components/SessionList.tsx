@@ -44,6 +44,62 @@ function compareSessions(a: SessionItem, b: SessionItem): number {
   return a.id.localeCompare(b.id);
 }
 
+function isChatRole(value: unknown): value is ChatEntry['role'] {
+  return value === 'user' || value === 'assistant' || value === 'tool' || value === 'system';
+}
+
+function optionalText(value: unknown): string | undefined {
+  if (typeof value === 'string') return value;
+  if (value === null || value === undefined) return undefined;
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
+}
+
+function normalizeToolSummary(value: unknown): ChatEntry['toolSummary'] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const tools: NonNullable<ChatEntry['toolSummary']> = [];
+  for (const item of value) {
+    if (!item || typeof item !== 'object') continue;
+    const raw = item as Record<string, unknown>;
+    const name = optionalText(raw.name);
+    if (!name) continue;
+    tools.push({
+      name,
+      argumentsText: optionalText(raw.argumentsText) || '',
+      resultPreview: optionalText(raw.resultPreview) || '',
+    });
+  }
+  return tools.length > 0 ? tools : undefined;
+}
+
+function normalizeChatEntry(message: unknown, index: number): ChatEntry {
+  const raw = message && typeof message === 'object' ? message as Record<string, unknown> : {};
+  const timestamp = typeof raw.timestamp === 'number' && Number.isFinite(raw.timestamp)
+    ? raw.timestamp
+    : typeof raw.createdAt === 'number' && Number.isFinite(raw.createdAt)
+      ? raw.createdAt
+      : Date.now();
+
+  return {
+    ...(raw as Partial<ChatEntry>),
+    id: typeof raw.id === 'string' && raw.id ? raw.id : `entry_${timestamp}_${index}_${Math.random().toString(36).slice(2, 8)}`,
+    role: isChatRole(raw.role) ? raw.role : 'assistant',
+    content: optionalText(raw.content) || '',
+    attachments: Array.isArray(raw.attachments) ? raw.attachments as ChatEntry['attachments'] : undefined,
+    toolName: optionalText(raw.toolName),
+    toolArgs: optionalText(raw.toolArgs),
+    toolResult: optionalText(raw.toolResult),
+    toolCallId: optionalText(raw.toolCallId),
+    toolSummary: normalizeToolSummary(raw.toolSummary),
+    toolSummaryExpanded: typeof raw.toolSummaryExpanded === 'boolean' ? raw.toolSummaryExpanded : undefined,
+    collabEvent: raw.collabEvent && typeof raw.collabEvent === 'object' ? raw.collabEvent as ChatEntry['collabEvent'] : undefined,
+    timestamp,
+  };
+}
+
 export function SessionList() {
   const [sessions, setSessions] = useState<SessionItem[]>([]);
   const [groups, setGroups] = useState<SessionGroupItem[]>([]);
@@ -135,16 +191,7 @@ export function SessionList() {
 
       const s = session as { id: string; modelId?: string; messages?: Array<ChatEntry>; agentMessages?: unknown[] };
       setSessionId(s.id);
-      const chatEntries = (s.messages || []).map((msg: ChatEntry) => ({
-        id: Date.now().toString() + Math.random(),
-        role: msg.role,
-        content: msg.content,
-        attachments: msg.attachments,
-        toolName: msg.toolName,
-        toolArgs: msg.toolArgs,
-        toolResult: msg.toolResult,
-        timestamp: msg.timestamp || Date.now(),
-      }));
+      const chatEntries = (s.messages || []).map(normalizeChatEntry);
       const modelId = s.modelId || useAppStore.getState().currentModel;
       loadEntries(s.id, chatEntries, modelId);
 

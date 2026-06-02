@@ -8,6 +8,8 @@ import { DiffPreview } from './DiffPreview';
 import { MermaidBlock } from './MermaidBlock';
 import { ToolCallCard } from './ToolCallCard';
 import { ToolSummaryCard } from './ToolSummaryCard';
+import { ArtifactPreviewButton } from './ArtifactPreview';
+import { ExpandableText } from './ExpandableText';
 import { inferImageMimeType } from '../utils/attachments';
 
 interface Props {
@@ -58,6 +60,17 @@ export const MessageBubble = memo(function MessageBubble({ entry }: Props) {
   const isLongContent = entry.content.length > LONG_MESSAGE_THRESHOLD;
   const visibleContent = isLongContent && !showFullContent ? makeTextPreview(entry.content) : entry.content;
   const isCollabSystem = entry.role === 'system' && entry.id.startsWith('collab_');
+  const collabArtifact = entry.collabEvent?.type === 'artifact_written' && entry.collabEvent.taskId && entry.collabEvent.artifactId
+    ? {
+      taskId: entry.collabEvent.taskId,
+      artifact: {
+        id: entry.collabEvent.artifactId,
+        type: String(entry.collabEvent.artifactType || 'artifact'),
+        path: entry.collabEvent.artifactPath || '',
+        createdAt: entry.collabEvent.createdAt || entry.timestamp,
+      },
+    }
+    : null;
 
   const handleCopy = useCallback(async () => {
     try {
@@ -153,10 +166,13 @@ export const MessageBubble = memo(function MessageBubble({ entry }: Props) {
     return (
       <div className={`message message-system ${isCollabSystem ? 'message-collab-system' : ''}`}>
         <div className="message-content">
-          {isCollabSystem ? (
-            <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]} components={markdownComponents}>
-              {entry.content}
-            </ReactMarkdown>
+          {collabArtifact ? (
+            <div className="collab-artifact-message">
+              <span>{entry.content}</span>
+              <ArtifactPreviewButton taskId={collabArtifact.taskId} artifact={collabArtifact.artifact} />
+            </div>
+          ) : isCollabSystem ? (
+            <ExpandableText text={entry.content} markdown collapsedChars={1800} className="collab-message-text" />
           ) : (
             entry.content
           )}

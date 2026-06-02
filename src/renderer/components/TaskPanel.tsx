@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { useChatStore } from '../stores/chat-store';
 import { EMPTY_COLLAB_TASKS, refreshCollabState, useCollabStore, type CollabTaskView } from '../stores/collab-store';
+import { ArtifactPreviewButton } from './ArtifactPreview';
 
 interface AgentTask {
   id: string;
@@ -43,6 +44,24 @@ export function TaskPanel({ open, onClose }: { open: boolean; onClose: () => voi
 
   const active = tasks.filter(task => task.status !== 'completed');
   const completed = tasks.filter(task => task.status === 'completed');
+  const refreshActiveCollab = () => {
+    if (activeId) void refreshCollabState(activeId);
+  };
+
+  const abortCollab = async (taskId: string) => {
+    await window.electronAPI?.abortCollabTask?.(taskId).catch(() => {});
+    refreshActiveCollab();
+  };
+
+  const retryCollab = async (taskId: string, phase?: string) => {
+    await window.electronAPI?.retryCollabTask?.(taskId, phase).catch(() => {});
+    refreshActiveCollab();
+  };
+
+  const approveCollab = async (taskId: string) => {
+    await window.electronAPI?.approveCollabTask?.(taskId).catch(() => {});
+    refreshActiveCollab();
+  };
 
   return (
     <div className="settings-overlay" onClick={onClose}>
@@ -72,10 +91,23 @@ export function TaskPanel({ open, onClose }: { open: boolean; onClose: () => voi
               </div>
               {task.lastEvent?.message && <div className="task-panel-desc">{task.lastEvent.message}</div>}
               {task.artifacts.length > 0 && (
-                <div className="task-panel-meta">
-                  {task.artifacts.map(artifact => `${artifact.type}: ${artifact.path.split(/[\\/]/).pop()}`).join(' | ')}
+                <div className="task-panel-artifacts">
+                  {task.artifacts.map(artifact => (
+                    <ArtifactPreviewButton key={artifact.id} taskId={task.id} artifact={artifact} />
+                  ))}
                 </div>
               )}
+              <div className="task-panel-actions">
+                {!['approved', 'failed', 'cancelled'].includes(task.status) && (
+                  <button type="button" className="settings-btn-sm" onClick={() => abortCollab(task.id)}>终止</button>
+                )}
+                {task.status === 'needs_fix' && (
+                  <>
+                    <button type="button" className="settings-btn-sm" onClick={() => retryCollab(task.id, task.currentPhase)}>继续修复</button>
+                    <button type="button" className="settings-btn-sm" onClick={() => approveCollab(task.id)}>人工通过</button>
+                  </>
+                )}
+              </div>
             </div>
           ))}
 

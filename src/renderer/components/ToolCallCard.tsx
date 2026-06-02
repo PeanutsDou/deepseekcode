@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { ExpandableText } from './ExpandableText';
 
 interface Props {
   toolName: string;
@@ -82,12 +83,14 @@ export function ToolCallCard({ toolName, toolArgs, toolResult }: Props) {
       </div>
       {expanded && visibleResult && (
         <>
-          <pre className={`tool-card-result ${hasLargeResult && !showFullResult ? 'tool-card-result-preview' : ''}`}>
-            {visibleResult}
-          </pre>
+          <ExpandableText
+            text={showFullResult && toolResult ? toolResult : visibleResult}
+            collapsedChars={3000}
+            className={`tool-card-result ${hasLargeResult && !showFullResult ? 'tool-card-result-preview' : ''}`}
+          />
           {hasLargeResult && !showFullResult && (
             <button className="tool-card-expand-btn" onClick={() => setShowFullResult(true)}>
-              显示完整结果
+              查看完整结果
             </button>
           )}
         </>

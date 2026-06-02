@@ -9,6 +9,8 @@ export interface CliRunOptions {
   logPath: string;
   input?: string;
   signal?: AbortSignal;
+  timeoutMs?: number;
+  maxOutputBytes?: number;
   onLine?: (line: string, parsed?: Record<string, unknown>) => void;
 }
 
@@ -39,6 +41,7 @@ function quoteWindowsShellArg(value: string): string {
 export function runCli(options: CliRunOptions): Promise<CliRunResult> {
   return new Promise((resolve, reject) => {
     const out = createWriteStream(options.logPath, { flags: 'a', encoding: 'utf8' });
+    const maxOutputBytes = Math.max(16 * 1024, options.maxOutputBytes || 2 * 1024 * 1024);
     const useWindowsShell = process.platform === 'win32';
     const child = useWindowsShell ? spawn(
       [options.command, ...options.args].map(quoteWindowsShellArg).join(' '),
@@ -60,8 +63,13 @@ export function runCli(options: CliRunOptions): Promise<CliRunResult> {
 
     let stdout = '';
     let stderr = '';
-    let lineBuffer = '';
+    let stdoutLineBuffer = '';
+    let stderrLineBuffer = '';
     let settled = false;
+    let timedOut = false;
+    let truncated = false;
+    let outputBytes = 0;
+    let timeout: NodeJS.Timeout | undefined;
 
     if (options.input !== undefined) {
       child.stdin?.end(options.input);
@@ -81,6 +89,23 @@ export function runCli(options: CliRunOptions): Promise<CliRunResult> {
       reject(error);
     };
 
+    const appendLimited = (target: 'stdout' | 'stderr', text: string) => {
+      const bytes = Buffer.byteLength(text);
+      outputBytes += bytes;
+      if (outputBytes > maxOutputBytes) {
+        if (!truncated) {
+          truncated = true;
+          const marker = '\n...[CLI output truncated by Neck Code]...\n';
+          out.write(marker);
+          if (target === 'stdout') stdout += marker;
+          else stderr += marker;
+        }
+        return;
+      }
+      if (target === 'stdout') stdout += text;
+      else stderr += text;
+    };
+
     const handleLine = (line: string) => {
       const trimmed = line.trim();
       if (!trimmed) return;
@@ -96,38 +121,54 @@ export function runCli(options: CliRunOptions): Promise<CliRunResult> {
 
     child.stdout?.on('data', (chunk: Buffer) => {
       const text = chunk.toString();
-      stdout += text;
       out.write(text);
-      lineBuffer += text;
-      const lines = lineBuffer.split(/\r?\n/);
-      lineBuffer = lines.pop() || '';
+      appendLimited('stdout', text);
+      stdoutLineBuffer += text;
+      const lines = stdoutLineBuffer.split(/\r?\n/);
+      stdoutLineBuffer = lines.pop() || '';
       for (const line of lines) handleLine(line);
     });
 
     child.stderr?.on('data', (chunk: Buffer) => {
       const text = chunk.toString();
-      stderr += text;
       out.write(text);
+      appendLimited('stderr', text);
+      stderrLineBuffer += text;
+      const lines = stderrLineBuffer.split(/\r?\n/);
+      stderrLineBuffer = lines.pop() || '';
+      for (const line of lines) handleLine(line);
     });
 
     child.on('error', fail);
-    child.on('close', (code) => {
-      if (lineBuffer) handleLine(lineBuffer);
-      finish({ exitCode: code, output: stdout, errorOutput: stderr });
+    child.on('close', (code, signal) => {
+      if (timeout) clearTimeout(timeout);
+      if (stdoutLineBuffer) handleLine(stdoutLineBuffer);
+      if (stderrLineBuffer) handleLine(stderrLineBuffer);
+      finish({ exitCode: code, output: stdout, errorOutput: stderr, signal, timedOut, truncated });
     });
 
-    const abort = () => {
+    const abort = (reason?: 'timeout') => {
+      if (reason === 'timeout') timedOut = true;
       try {
-        child.kill('SIGTERM');
+        if (process.platform === 'win32' && child.pid) {
+          spawn('taskkill', ['/pid', String(child.pid), '/T', '/F'], { windowsHide: true });
+        } else {
+          child.kill('SIGTERM');
+        }
       } catch {
         // Ignore kill failures; close/error will settle the promise.
       }
     };
 
+    if (options.timeoutMs && options.timeoutMs > 0) {
+      timeout = setTimeout(() => abort('timeout'), options.timeoutMs);
+    }
+
+    const abortBySignal = () => abort();
     if (options.signal?.aborted) {
       abort();
     } else {
-      options.signal?.addEventListener('abort', abort, { once: true });
+      options.signal?.addEventListener('abort', abortBySignal, { once: true });
     }
   });
 }

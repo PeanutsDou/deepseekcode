@@ -79,6 +79,7 @@ const api = {
   abortCollabTask: (taskId: string) => ipcRenderer.invoke('collab:abort-task', taskId),
   retryCollabTask: (taskId: string, phase?: string) => ipcRenderer.invoke('collab:retry-task', taskId, phase),
   approveCollabTask: (taskId: string) => ipcRenderer.invoke('collab:approve-task', taskId),
+  readCollabArtifact: (taskId: string, artifactId: string) => ipcRenderer.invoke('collab:read-artifact', taskId, artifactId),
   onCollabEvent: (cb: (event: unknown) => void) => {
     const listener = (_event: unknown, event: unknown) => cb(event);
     ipcRenderer.on('collab:event', listener);

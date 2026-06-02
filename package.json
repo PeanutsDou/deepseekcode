@@ -15,6 +15,7 @@
     "server": "tsx server/index.ts",
     "server:build": "tsc -p server/tsconfig.json && node server/dist/index.js",
     "server:test": "tsx server/scripts/smoke-test.ts",
+    "test": "npm run build:main && npm run build:renderer",
     "build": "npm run build:main && npm run build:renderer",
     "start": "node node_modules/electron/cli.js .",
     "pack": "npm run build && electron-builder --dir",

@@ -1,5 +1,6 @@
 ﻿import { create } from 'zustand';
 import type { AgentError, AgentErrorCode, RunState, RunStatusEvent } from '../../shared/types';
+import type { CollabEvent } from '../../shared/types';
 import { useAppStore } from './app-store';
 
 export interface ChatEntry {
@@ -14,6 +15,7 @@ export interface ChatEntry {
   timestamp: number;
   toolSummary?: Array<{ name: string; argumentsText: string; resultPreview: string }>;
   toolSummaryExpanded?: boolean;
+  collabEvent?: CollabEvent;
 }
 
 export interface SessionState {
@@ -52,6 +54,7 @@ interface ChatState {
   setRunStatusTo: (sid: string, status: RunStatusEvent) => void;
   setRunTokensTo: (sid: string, inputTokens: number, outputTokens: number) => void;
   trimEntriesFrom: (sid: string, fromIndex: number) => void;
+  updateEntriesTo: (sid: string, updater: (entries: ChatEntry[]) => ChatEntry[]) => void;
   setSessionModelTo: (sid: string, modelId: string) => void;
   setEntryToolSummaryExpanded: (sid: string, entryId: string, expanded: boolean) => void;
 
@@ -235,7 +238,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     set(state => {
       const ses = state.sessions[sid] || emptySession();
       const entries = [...ses.entries, entry];
-      if (entry.role === 'user' || entry.role === 'tool') autoSave(sid, entries);
+      autoSave(sid, entries, ses.modelId);
       return updateSession(state, sid, s => ({ ...s, entries, error: null }));
     });
   },
@@ -338,18 +341,26 @@ export const useChatStore = create<ChatState>((set, get) => ({
     }));
   },
 
+  updateEntriesTo(sid, updater) {
+    set(state => {
+      const ses = state.sessions[sid];
+      if (!ses) return state;
+      const entries = updater(ses.entries);
+      if (entries === ses.entries) return state;
+      autoSave(sid, entries, ses.modelId);
+      return updateSession(state, sid, s => ({ ...s, entries }));
+    });
+  },
+
   setSessionModelTo(sid, modelId) {
     set(state => updateSession(state, sid, ses => ({ ...ses, modelId })));
     if (get().activeId === sid) useAppStore.getState().setModel(modelId);
   },
 
   setEntryToolSummaryExpanded(sid, entryId, expanded) {
-    set(state => updateSession(state, sid, ses => ({
-      ...ses,
-      entries: ses.entries.map(e =>
-        e.id === entryId ? { ...e, toolSummaryExpanded: expanded } : e,
-      ),
-    })));
+    get().updateEntriesTo(sid, entries => entries.map(e =>
+      e.id === entryId ? { ...e, toolSummaryExpanded: expanded } : e,
+    ));
   },
 
   ensureActiveSession() {

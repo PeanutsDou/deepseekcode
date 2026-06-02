@@ -45,7 +45,7 @@ import { triggerHooks, triggerHooksSync } from './hooks';
 import { listTasksSnapshot, onTasksChanged } from './tools/task-tools';
 import { normalizeCollabConfig } from './collab/config';
 import { checkCollabCli } from './collab/check';
-import { abortCollabTask, approveCollabTask, closeCollabForSession, onCollabEvent, retryCollabTask, runCollabTask } from './collab/orchestrator';
+import { abortCollabTask, approveCollabTask, closeCollabForSession, onCollabEvent, readCollabArtifact, recoverCollabRuntime, retryCollabTask, runCollabTask } from './collab/orchestrator';
 import { getSessionStatus as getCollabSessionStatus, listTaskViews as listCollabTaskViews } from './collab/store';
 
 let agentMdContent = '';
@@ -420,6 +420,7 @@ export function setupIpcHandlers(
   onCollabEvent((event) => {
     getWindow()?.webContents.send('collab:event', event);
   });
+  recoverCollabRuntime();
 
   function getSessionModelId(sessionId?: string): string {
     const cfg = getConfig();
@@ -1482,6 +1483,8 @@ function releasePetSession(sessionId: string) {
   ipcMain.handle('collab:retry-task', async (_event, taskId: string, phase?: string) => retryCollabTask(taskId, phase));
 
   ipcMain.handle('collab:approve-task', (_event, taskId: string) => approveCollabTask(taskId));
+
+  ipcMain.handle('collab:read-artifact', (_event, taskId: string, artifactId: string) => readCollabArtifact(taskId, artifactId));
 
   ipcMain.handle('config:get-providers', () => {
     return getConfig().providers.map(p => ({ id: p.id, name: p.name, models: p.models.map(m => m.name) }));

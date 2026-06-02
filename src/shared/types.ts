@@ -183,6 +183,7 @@ export interface CollabEvent {
   message?: string;
   artifactType?: string;
   artifactPath?: string;
+  artifactId?: string;
   payload?: Record<string, unknown>;
   createdAt: number;
 }

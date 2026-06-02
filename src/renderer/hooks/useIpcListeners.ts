@@ -54,20 +54,18 @@ export function useIpcListeners() {
       });
     }));
     unsubs.push(api.onToolResult((sid, data: any) => {
-      const state = store.getState();
-      const ses = state.sessions[sid];
-      if (ses) {
-        const entries = [...ses.entries];
+      store.getState().updateEntriesTo(sid, currentEntries => {
+        const entries = [...currentEntries];
         for (let i = entries.length - 1; i >= 0; i--) {
           const idMatches = data.toolCallId && entries[i].toolCallId === data.toolCallId;
           const fallbackMatches = !data.toolCallId && entries[i].toolName === data.name && !entries[i].toolResult;
           if (entries[i].role === 'tool' && (idMatches || fallbackMatches)) {
             entries[i] = { ...entries[i], content: data.result, toolResult: data.result };
-            break;
+            return entries;
           }
         }
-        store.setState({ sessions: { ...state.sessions, [sid]: { ...ses, entries } } });
-      }
+        return currentEntries;
+      });
     }));
     unsubs.push(api.onToolSummary?.((sid, data: any) => {
       if (!data?.summary) return;
@@ -87,15 +85,29 @@ export function useIpcListeners() {
     }));
     unsubs.push(api.onCollabEvent?.((event: any) => {
       useCollabStore.getState().recordEvent(event);
-      if (event?.type === 'task_created' && event?.sessionId) {
+      const collabEntry = (kind: string, content: string) => {
+        if (!event?.sessionId || !content) return;
         store.getState().addEntryTo(event.sessionId, {
-          id: `collab_task_${event.id || event.taskId || Date.now()}`,
+          id: `collab_${kind}_${event.id || Date.now()}`,
           role: 'system',
-          content: `协同任务已创建：${String(event.taskId || '').slice(0, 8)}`,
+          content,
+          collabEvent: event,
           timestamp: event.createdAt || Date.now(),
         });
+      };
+      if (event?.type === 'task_created') {
+        collabEntry('task', `协同任务已创建：${String(event.taskId || '').slice(0, 8)}`);
+        if (event?.sessionId) void refreshCollabState(event.sessionId);
+        return;
       }
-      if (event?.type === 'cli_tool' && event?.sessionId) {
+      if (event?.type === 'artifact_written') {
+        if (['brief', 'result', 'diff', 'test_output', 'review'].includes(String(event.artifactType || ''))) {
+          collabEntry('artifact', event.message || '协同产物已生成');
+        }
+        if (event?.sessionId) void refreshCollabState(event.sessionId);
+        return;
+      }
+      if (['cli_tool', 'tool_started'].includes(event?.type) && event?.sessionId) {
         store.getState().addEntryTo(event.sessionId, {
           id: `collab_tool_${event.id || Date.now()}`,
           role: 'tool',
@@ -106,15 +118,16 @@ export function useIpcListeners() {
             action: event.payload?.summary || event.message || '',
           }),
           toolResult: event.message || '',
+          collabEvent: event,
           timestamp: event.createdAt || Date.now(),
         });
-      } else if (['cli_output', 'retry_started', 'review_needs_fix'].includes(event?.type) && event?.sessionId && event?.message) {
-        store.getState().addEntryTo(event.sessionId, {
-          id: `collab_event_${event.id || Date.now()}`,
-          role: 'system',
-          content: event.message,
-          timestamp: event.createdAt || Date.now(),
-        });
+        if (event?.sessionId) void refreshCollabState(event.sessionId);
+        return;
+      }
+      if (['output', 'cli_output', 'retry_started', 'review_needs_fix', 'task_failed', 'task_cancelled', 'task_completed', 'recovered_interrupted_task'].includes(event?.type) && event?.message) {
+        collabEntry('event', event.message);
+        if (event?.sessionId) void refreshCollabState(event.sessionId);
+        return;
       }
       if (event?.sessionId) void refreshCollabState(event.sessionId);
     }) || (() => {}));

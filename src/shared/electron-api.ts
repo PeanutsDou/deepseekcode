@@ -142,6 +142,7 @@ export interface ElectronAPI {
   abortCollabTask: (taskId: string) => Promise<void>;
   retryCollabTask: (taskId: string, phase?: string) => Promise<unknown>;
   approveCollabTask: (taskId: string) => Promise<unknown>;
+  readCollabArtifact: (taskId: string, artifactId: string) => Promise<unknown>;
   onCollabEvent: (cb: (event: CollabEvent) => void) => Unsubscribe;
   onCollabConfigUpdated: (cb: (config: CollabConfig) => void) => Unsubscribe;
 

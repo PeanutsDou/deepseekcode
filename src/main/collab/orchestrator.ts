@@ -21,9 +21,13 @@ import {
   createRun,
   createTask,
   ensureCollabSession,
+  finishOpenRunsForTask,
+  getArtifactForTask,
   getTask,
   getTaskView,
+  recoverInterruptedCollabState,
   releaseWorkspaceLock,
+  refreshWorkspaceLock,
   tryAcquireWorkspaceLock,
   updateRun,
   updateTask,
@@ -33,6 +37,10 @@ const execFile = promisify(execFileCb);
 const emitter = new EventEmitter();
 const controllers = new Map<string, AbortController>();
 const MAX_COLLAB_EXECUTION_ATTEMPTS = 3;
+const CLI_TIMEOUT_MS = 20 * 60 * 1000;
+const CLI_MAX_OUTPUT_BYTES = 3 * 1024 * 1024;
+const WORKSPACE_LOCK_TTL_MS = 6 * 60 * 60 * 1000;
+const ARTIFACT_READ_LIMIT = 1024 * 1024;
 
 function truncate(text: string, max = 6000): string {
   if (text.length <= max) return text;
@@ -77,7 +85,28 @@ function artifactDir(workspaceRoot: string, sessionId: string, taskId: string): 
 async function writeArtifact(taskId: string, type: CollabArtifactType, path: string, content: string): Promise<void> {
   await fs.mkdir(dirname(path), { recursive: true });
   await fs.writeFile(path, content, 'utf8');
-  addArtifact(taskId, type, path);
+  registerArtifact(taskId, type, path);
+}
+
+function registerArtifact(taskId: string, type: CollabArtifactType, path: string): void {
+  const artifact = addArtifact(taskId, type, path);
+  const view = getTaskView(taskId);
+  if (view) {
+    event({
+      sessionId: view.sessionId,
+      collabSessionId: view.collabSessionId,
+      taskId,
+      agentRole: 'neck',
+      type: 'artifact_written',
+      phase: view.currentPhase,
+      status: view.status,
+      message: artifactLabel(type),
+      artifactType: type,
+      artifactPath: path,
+      artifactId: artifact.id,
+      payload: { artifactId: artifact.id, path },
+    });
+  }
 }
 
 async function writeStatusFile(session: CollabSessionRow, task: CollabTaskRow, dir: string): Promise<string> {
@@ -85,8 +114,23 @@ async function writeStatusFile(session: CollabSessionRow, task: CollabTaskRow, d
   const path = join(dir, 'status.json');
   await fs.mkdir(dir, { recursive: true });
   await fs.writeFile(path, JSON.stringify(view || task, null, 2), 'utf8');
-  addArtifact(task.id, 'status', path);
+  registerArtifact(task.id, 'status', path);
   return path;
+}
+
+function artifactLabel(type: CollabArtifactType): string {
+  const labels: Record<CollabArtifactType, string> = {
+    brief: 'Codex 实现简报已生成',
+    codex_plan_log: 'Codex 规划日志已保存',
+    claude_log: 'Claude Code 执行日志已保存',
+    result: 'Claude 执行摘要已生成',
+    diff: '变更 diff 已生成',
+    test_output: '验证输出已生成',
+    codex_review_log: 'Codex 审查日志已保存',
+    review: 'Codex 审查结果已生成',
+    status: '协同任务状态已保存',
+  };
+  return labels[type] || '协同产物已生成';
 }
 
 function buildCodexPlanPrompt(userMessage: string, workspaceRoot: string, attachments: Attachment[]): string {
@@ -142,7 +186,17 @@ function buildClaudeFixPrompt(brief: string, review: string, diff: string, testO
   ].join('\n');
 }
 
-function buildCodexReviewPrompt(userMessage: string, brief: string, claudeOutput: string, baselineDiff: string, diff: string, testOutput: string): string {
+function buildCodexReviewPrompt(
+  userMessage: string,
+  brief: string,
+  claudeOutput: string,
+  baselineDiff: string,
+  baselineStatus: string,
+  currentStatus: string,
+  stagedDiff: string,
+  diff: string,
+  testOutput: string,
+): string {
   return [
     'You are the Codex Worker in review mode for Neck Code model collaboration.',
     'Review the implementation. Do not edit files.',
@@ -163,6 +217,15 @@ function buildCodexReviewPrompt(userMessage: string, brief: string, claudeOutput
     '',
     'Pre-existing git diff before this collaboration task (ignore this as baseline):',
     truncate(baselineDiff || 'No pre-existing diff.', 8000),
+    '',
+    'Pre-existing git status before this collaboration task:',
+    truncate(baselineStatus || 'No pre-existing status.', 4000),
+    '',
+    'Current git status after Claude execution:',
+    truncate(currentStatus || 'No current git status output.', 4000),
+    '',
+    'Current staged diff after Claude execution:',
+    truncate(stagedDiff || 'No staged diff.', 8000),
     '',
     'Current git diff after Claude execution:',
     truncate(diff, 12000),
@@ -189,13 +252,13 @@ function toolLabel(name: string, input: unknown): string {
 function summarizeCliLine(agentRole: 'codex' | 'claude', phase: string, line: string, parsed?: Record<string, unknown>): { type: string; message: string; payload?: Record<string, unknown> } | null {
   if (!parsed) {
     const text = compact(line, 160);
-    return text ? { type: 'cli_status', message: text } : null;
+    return text ? { type: 'status', message: text } : null;
   }
 
   if (agentRole === 'claude') {
     const type = String(parsed.type || '');
     if (type === 'system' && parsed.subtype === 'init') {
-      return { type: 'cli_status', message: `Claude Code 已启动：${String(parsed.model || '默认模型')}` };
+      return { type: 'status', message: `Claude Code 已启动：${String(parsed.model || '默认模型')}` };
     }
     const message = isRecord(parsed.message) ? parsed.message : {};
     const content = Array.isArray(message.content) ? message.content : [];
@@ -204,38 +267,38 @@ function summarizeCliLine(agentRole: 'codex' | 'claude', phase: string, line: st
       if (block.type === 'tool_use') {
         const name = String(block.name || 'tool');
         return {
-          type: 'cli_tool',
+          type: 'tool_started',
           message: `Claude Code：${toolLabel(name, block.input)}`,
           payload: { toolName: name, summary: toolLabel(name, block.input) },
         };
       }
       if (block.type === 'text') {
         const text = compact(block.text, 180);
-        if (text) return { type: 'cli_output', message: `Claude Code：${text}` };
+        if (text) return { type: 'output', message: `Claude Code：${text}` };
       }
       if (block.type === 'thinking') {
-        return { type: 'cli_status', message: 'Claude Code 正在分析实现步骤。' };
+        return { type: 'status', message: 'Claude Code 正在分析实现步骤。' };
       }
     }
-    if (type === 'result') return { type: 'cli_status', message: 'Claude Code 执行阶段完成。' };
+    if (type === 'result') return { type: 'status', message: 'Claude Code 执行阶段完成。' };
     return null;
   }
 
   const type = String(parsed.type || '');
-  if (type === 'thread.started') return { type: 'cli_status', message: phase === 'reviewing_codex' ? 'Codex 已开始审查。' : 'Codex 已开始规划。' };
-  if (type === 'turn.started') return { type: 'cli_status', message: phase === 'reviewing_codex' ? 'Codex 正在读取 diff 和验证结果。' : 'Codex 正在整理实现简报。' };
+  if (type === 'thread.started') return { type: 'status', message: phase === 'reviewing_codex' ? 'Codex 已开始审查。' : 'Codex 已开始规划。' };
+  if (type === 'turn.started') return { type: 'status', message: phase === 'reviewing_codex' ? 'Codex 正在读取 diff 和验证结果。' : 'Codex 正在整理实现简报。' };
   if (type === 'item.completed' && isRecord(parsed.item)) {
     const item = parsed.item;
     if (item.type === 'agent_message') {
       const text = compact(item.text, 180);
-      return text ? { type: 'cli_output', message: `Codex：${text}` } : null;
+      return text ? { type: 'output', message: `Codex：${text}` } : null;
     }
     if (item.type === 'tool_call') {
       const name = String(item.name || item.tool_name || 'tool');
-      return { type: 'cli_tool', message: `Codex：${toolLabel(name, item.arguments)}`, payload: { toolName: name } };
+      return { type: 'tool_started', message: `Codex：${toolLabel(name, item.arguments)}`, payload: { toolName: name } };
     }
   }
-  if (type === 'turn.completed') return { type: 'cli_status', message: phase === 'reviewing_codex' ? 'Codex 审查完成。' : 'Codex 规划完成。' };
+  if (type === 'turn.completed') return { type: 'status', message: phase === 'reviewing_codex' ? 'Codex 审查完成。' : 'Codex 规划完成。' };
   return null;
 }
 
@@ -300,6 +363,34 @@ async function getGitDiff(workspaceRoot: string): Promise<string> {
   }
 }
 
+async function getGitStagedDiff(workspaceRoot: string): Promise<string> {
+  try {
+    const result = await execFile('git', ['diff', '--cached', '--binary'], {
+      cwd: workspaceRoot,
+      timeout: 60_000,
+      maxBuffer: 10 * 1024 * 1024,
+    });
+    return result.stdout || '';
+  } catch (err) {
+    const error = err as { stdout?: string; stderr?: string; message?: string };
+    return [error.stdout, error.stderr, error.message].filter(Boolean).join('\n') || 'git staged diff failed';
+  }
+}
+
+async function getGitStatus(workspaceRoot: string): Promise<string> {
+  try {
+    const result = await execFile('git', ['status', '--short', '--untracked-files=all'], {
+      cwd: workspaceRoot,
+      timeout: 60_000,
+      maxBuffer: 2 * 1024 * 1024,
+    });
+    return result.stdout || '';
+  } catch (err) {
+    const error = err as { stdout?: string; stderr?: string; message?: string };
+    return [error.stdout, error.stderr, error.message].filter(Boolean).join('\n') || 'git status failed';
+  }
+}
+
 async function runTestsIfConfigured(workspaceRoot: string): Promise<string> {
   try {
     const packageJson = JSON.parse(await fs.readFile(join(workspaceRoot, 'package.json'), 'utf8')) as {
@@ -323,7 +414,7 @@ async function runTestsIfConfigured(workspaceRoot: string): Promise<string> {
 
 async function acquireWorkspaceLock(workspaceRoot: string, task: CollabTaskRow, session: CollabSessionRow, signal: AbortSignal): Promise<void> {
   while (!signal.aborted) {
-    if (tryAcquireWorkspaceLock(workspaceRoot, task.id)) {
+    if (tryAcquireWorkspaceLock(workspaceRoot, task.id, WORKSPACE_LOCK_TTL_MS)) {
       event({
         sessionId: session.neck_session_id,
         collabSessionId: session.id,
@@ -349,6 +440,25 @@ async function acquireWorkspaceLock(workspaceRoot: string, task: CollabTaskRow, 
     await new Promise(resolve => setTimeout(resolve, 1000));
   }
   throw new Error('等待工作区写入锁时已取消。');
+}
+
+async function withWorkspaceLock<T>(
+  workspaceRoot: string,
+  task: CollabTaskRow,
+  session: CollabSessionRow,
+  signal: AbortSignal,
+  fn: () => Promise<T>,
+): Promise<T> {
+  await acquireWorkspaceLock(workspaceRoot, task, session, signal);
+  const heartbeat = setInterval(() => {
+    refreshWorkspaceLock(workspaceRoot, task.id, WORKSPACE_LOCK_TTL_MS);
+  }, 30_000);
+  try {
+    return await fn();
+  } finally {
+    clearInterval(heartbeat);
+    releaseWorkspaceLock(workspaceRoot, task.id);
+  }
 }
 
 function codexArgs(config: CollabConfig, model: string, workspaceRoot: string, outputPath: string): string[] {
@@ -382,6 +492,46 @@ function claudeArgs(config: CollabConfig): string[] {
 export function onCollabEvent(listener: (event: CollabEvent) => void): () => void {
   emitter.on('event', listener);
   return () => emitter.off('event', listener);
+}
+
+export function recoverCollabRuntime(): void {
+  for (const recovered of recoverInterruptedCollabState()) {
+    emitter.emit('event', recovered);
+  }
+}
+
+export async function readCollabArtifact(taskId: string, artifactId: string): Promise<{
+  artifact: { id: string; type: CollabArtifactType; path: string; createdAt: number };
+  content: string;
+  truncated: boolean;
+}> {
+  const artifact = getArtifactForTask(taskId, artifactId);
+  if (!artifact) throw new Error('Collaboration artifact not found.');
+  const stat = await fs.stat(artifact.path);
+  const truncated = stat.size > ARTIFACT_READ_LIMIT;
+  let content: string;
+  if (truncated) {
+    const handle = await fs.open(artifact.path, 'r');
+    try {
+      const buffer = Buffer.alloc(ARTIFACT_READ_LIMIT);
+      const result = await handle.read(buffer, 0, ARTIFACT_READ_LIMIT, 0);
+      content = buffer.subarray(0, result.bytesRead).toString('utf8');
+    } finally {
+      await handle.close();
+    }
+  } else {
+    content = await fs.readFile(artifact.path, 'utf8');
+  }
+  return {
+    artifact: {
+      id: artifact.id,
+      type: artifact.type,
+      path: artifact.path,
+      createdAt: artifact.created_at,
+    },
+    content,
+    truncated,
+  };
 }
 
 export async function runCollabTask(params: {
@@ -428,6 +578,7 @@ export async function runCollabTask(params: {
     });
     updateRun(neckRun.id, 'completed');
     const baselineDiff = await getGitDiff(params.workspaceRoot);
+    const baselineStatus = await getGitStatus(params.workspaceRoot);
 
     updateTask(task.id, 'planning_codex');
     const briefPath = join(dir, 'brief.md');
@@ -452,6 +603,8 @@ export async function runCollabTask(params: {
       logPath: codexPlanLog,
       input: buildCodexPlanPrompt(params.userMessage, params.workspaceRoot, params.attachments),
       signal,
+      timeoutMs: CLI_TIMEOUT_MS,
+      maxOutputBytes: CLI_MAX_OUTPUT_BYTES,
       onLine(line, parsed) {
         const summary = summarizeCliLine('codex', 'planning_codex', line, parsed);
         if (!summary) return;
@@ -470,14 +623,17 @@ export async function runCollabTask(params: {
         });
       },
     });
-    addArtifact(task.id, 'codex_plan_log', codexPlanLog);
-    if (planResult.exitCode !== 0) throw new Error(`Codex planning failed with exit code ${planResult.exitCode}: ${planResult.errorOutput || planResult.output}`);
+    registerArtifact(task.id, 'codex_plan_log', codexPlanLog);
+    if (planResult.exitCode !== 0) {
+      updateRun(planRun.id, signal.aborted ? 'cancelled' : 'failed');
+      throw new Error(`Codex planning failed with exit code ${planResult.exitCode}: ${planResult.errorOutput || planResult.output}`);
+    }
     let brief = await fs.readFile(briefPath, 'utf8').catch(() => planResult.output || buildCodexPlanPrompt(params.userMessage, params.workspaceRoot, params.attachments));
     if (!brief.trim()) {
       brief = buildCodexPlanPrompt(params.userMessage, params.workspaceRoot, params.attachments);
       await writeArtifact(task.id, 'brief', briefPath, brief);
     } else {
-      addArtifact(task.id, 'brief', briefPath);
+      registerArtifact(task.id, 'brief', briefPath);
     }
     updateRun(planRun.id, 'completed');
     updateTask(task.id, 'planned');
@@ -505,7 +661,7 @@ export async function runCollabTask(params: {
           message: `Codex 要求修复，开始第 ${attempt} 轮执行。`,
         });
       }
-      await acquireWorkspaceLock(params.workspaceRoot, task, session, signal);
+      const claudeResult = await withWorkspaceLock(params.workspaceRoot, task, session, signal, async () => {
       const claudeLog = join(dir, `claude-output${suffix}.jsonl`);
       const resultPath = join(dir, `result${suffix}.md`);
       const claudeRun = createRun(task.id, 'claude', params.config.claudeCommand, params.config.claudeModel);
@@ -521,13 +677,15 @@ export async function runCollabTask(params: {
         model: params.config.claudeModel,
         message: attempt === 1 ? 'Claude Code 开始执行实现。' : `Claude Code 开始第 ${attempt} 轮修复。`,
       });
-      const claudeResult = await runCli({
+      const result = await runCli({
         command: params.config.claudeCommand,
         args: claudeArgs(params.config),
         cwd: params.workspaceRoot,
         logPath: claudeLog,
         input: attempt === 1 ? buildClaudePrompt(brief) : buildClaudeFixPrompt(brief, review, diff, testOutput),
         signal,
+        timeoutMs: CLI_TIMEOUT_MS,
+        maxOutputBytes: CLI_MAX_OUTPUT_BYTES,
         onLine(line, parsed) {
           const summary = summarizeCliLine('claude', 'executing_claude', line, parsed);
           if (!summary) return;
@@ -546,16 +704,22 @@ export async function runCollabTask(params: {
           });
         },
       });
-      addArtifact(task.id, 'claude_log', claudeLog);
-      finalClaudeSummary = summarizeClaudeOutput(claudeResult.output || claudeResult.errorOutput || '');
+      registerArtifact(task.id, 'claude_log', claudeLog);
+      finalClaudeSummary = summarizeClaudeOutput(result.output || result.errorOutput || '');
       await writeArtifact(task.id, 'result', resultPath, finalClaudeSummary);
-      if (claudeResult.exitCode !== 0) throw new Error(`Claude execution failed with exit code ${claudeResult.exitCode}: ${claudeResult.errorOutput || claudeResult.output}`);
+      if (result.exitCode !== 0) {
+        updateRun(claudeRun.id, signal.aborted ? 'cancelled' : 'failed');
+        throw new Error(`Claude execution failed with exit code ${result.exitCode}: ${result.errorOutput || result.output}`);
+      }
       updateRun(claudeRun.id, 'completed');
+      return result;
+      });
       updateTask(task.id, 'executed');
-      releaseWorkspaceLock(params.workspaceRoot, task.id);
 
       const diffPath = join(dir, `diff${suffix}.patch`);
       diff = await getGitDiff(params.workspaceRoot);
+      const currentStatus = await getGitStatus(params.workspaceRoot);
+      const stagedDiff = await getGitStagedDiff(params.workspaceRoot);
       await writeArtifact(task.id, 'diff', diffPath, diff || 'No git diff.');
       const testPath = join(dir, `test-output${suffix}.log`);
       testOutput = await runTestsIfConfigured(params.workspaceRoot);
@@ -582,8 +746,10 @@ export async function runCollabTask(params: {
         args: codexArgs(params.config, params.config.codexModel, params.workspaceRoot, reviewPath),
         cwd: params.workspaceRoot,
         logPath: codexReviewLog,
-        input: buildCodexReviewPrompt(params.userMessage, brief, claudeResult.output, baselineDiff, diff, testOutput),
+        input: buildCodexReviewPrompt(params.userMessage, brief, claudeResult.output, baselineDiff, baselineStatus, currentStatus, stagedDiff, diff, testOutput),
         signal,
+        timeoutMs: CLI_TIMEOUT_MS,
+        maxOutputBytes: CLI_MAX_OUTPUT_BYTES,
         onLine(line, parsed) {
           const summary = summarizeCliLine('codex', 'reviewing_codex', line, parsed);
           if (!summary) return;
@@ -602,14 +768,17 @@ export async function runCollabTask(params: {
           });
         },
       });
-      addArtifact(task.id, 'codex_review_log', codexReviewLog);
-      if (reviewResult.exitCode !== 0) throw new Error(`Codex review failed with exit code ${reviewResult.exitCode}: ${reviewResult.errorOutput || reviewResult.output}`);
+      registerArtifact(task.id, 'codex_review_log', codexReviewLog);
+      if (reviewResult.exitCode !== 0) {
+        updateRun(reviewRun.id, signal.aborted ? 'cancelled' : 'failed');
+        throw new Error(`Codex review failed with exit code ${reviewResult.exitCode}: ${reviewResult.errorOutput || reviewResult.output}`);
+      }
       review = await fs.readFile(reviewPath, 'utf8').catch(() => reviewResult.output || '');
       if (!review.trim()) {
         review = reviewResult.output || 'Codex review produced no output.';
         await writeArtifact(task.id, 'review', reviewPath, review);
       } else {
-        addArtifact(task.id, 'review', reviewPath);
+        registerArtifact(task.id, 'review', reviewPath);
       }
       const reviewText = review || reviewResult.output || '';
       const needsFix = /\bNEEDS_FIX\b/i.test(reviewText);
@@ -663,6 +832,7 @@ export async function runCollabTask(params: {
   } catch (err) {
     releaseWorkspaceLock(params.workspaceRoot, task.id);
     const aborted = signal.aborted;
+    finishOpenRunsForTask(task.id, aborted ? 'cancelled' : 'failed');
     updateTask(task.id, aborted ? 'cancelled' : 'failed', aborted ? 'cancelled' : 'failed');
     await writeStatusFile(session, task, dir).catch(() => {});
     event({
@@ -691,7 +861,10 @@ export async function runCollabTask(params: {
 export function abortCollabTask(taskId: string): void {
   controllers.get(taskId)?.abort();
   const task = getTask(taskId);
-  if (task) updateTask(task.id, 'cancelled', 'cancelled');
+  if (task) {
+    finishOpenRunsForTask(task.id, 'cancelled');
+    updateTask(task.id, 'cancelled', 'cancelled');
+  }
 }
 
 export function approveCollabTask(taskId: string): CollabTaskView | undefined {

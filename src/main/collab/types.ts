@@ -98,7 +98,7 @@ export interface CollabTaskView {
   createdAt: number;
   updatedAt: number;
   agents: CollabAgentStatus[];
-  artifacts: Array<{ type: CollabArtifactType; path: string; createdAt: number }>;
+  artifacts: Array<{ id: string; type: CollabArtifactType; path: string; createdAt: number }>;
   lastEvent?: CollabEvent;
 }
 
@@ -126,6 +126,7 @@ export interface CollabEvent {
   message?: string;
   artifactType?: CollabArtifactType;
   artifactPath?: string;
+  artifactId?: string;
   payload?: Record<string, unknown>;
   createdAt: number;
 }
@@ -134,4 +135,7 @@ export interface CliRunResult {
   exitCode: number | null;
   output: string;
   errorOutput: string;
+  signal?: NodeJS.Signals | null;
+  timedOut?: boolean;
+  truncated?: boolean;
 }

@@ -19,6 +19,13 @@ function now(): number {
   return Date.now();
 }
 
+function ensureColumn(table: string, column: string, definition: string): void {
+  const columns = getDb().prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+  if (!columns.some(col => col.name === column)) {
+    getDb().exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+  }
+}
+
 function ensureSchema(): void {
   getDb().exec(`
     CREATE TABLE IF NOT EXISTS collab_sessions (
@@ -87,6 +94,9 @@ function ensureSchema(): void {
     CREATE UNIQUE INDEX IF NOT EXISTS idx_collab_locks_workspace_type
       ON collab_locks(workspace_root, lock_type);
   `);
+  ensureColumn('collab_locks', 'owner_pid', 'INTEGER');
+  ensureColumn('collab_locks', 'heartbeat_at', 'INTEGER');
+  ensureColumn('collab_locks', 'expires_at', 'INTEGER');
 }
 
 function parseEvent(row: { id: string; payload_json: string; created_at: number } | undefined): CollabEvent | undefined {
@@ -153,7 +163,7 @@ function taskToView(task: CollabTaskRow, session: CollabSessionRow): CollabTaskV
     createdAt: task.created_at,
     updatedAt: task.updated_at,
     agents,
-    artifacts: artifacts.map(item => ({ type: item.type, path: item.path, createdAt: item.created_at })),
+    artifacts: artifacts.map(item => ({ id: item.id, type: item.type, path: item.path, createdAt: item.created_at })),
     lastEvent,
   };
 }
@@ -250,12 +260,34 @@ export function updateRun(runId: string, status: CollabRunStatus, cliSessionId?:
     .run(status, cliSessionId ?? null, status === 'running' || status === 'pending' ? null : now(), runId);
 }
 
-export function addArtifact(taskId: string, type: CollabArtifactType, path: string): void {
+export function finishOpenRunsForTask(taskId: string, status: Extract<CollabRunStatus, 'failed' | 'cancelled'>): void {
   ensureSchema();
+  getDb()
+    .prepare("UPDATE collab_runs SET status = ?, ended_at = ? WHERE task_id = ? AND status IN ('pending', 'running')")
+    .run(status, now(), taskId);
+}
+
+export function addArtifact(taskId: string, type: CollabArtifactType, path: string): CollabArtifactRow {
+  ensureSchema();
+  const row: CollabArtifactRow = {
+    id: randomUUID(),
+    task_id: taskId,
+    type,
+    path,
+    created_at: now(),
+  };
   getDb().prepare(`
     INSERT INTO collab_artifacts (id, task_id, type, path, created_at)
     VALUES (?, ?, ?, ?, ?)
-  `).run(randomUUID(), taskId, type, path, now());
+  `).run(row.id, row.task_id, row.type, row.path, row.created_at);
+  return row;
+}
+
+export function getArtifactForTask(taskId: string, artifactId: string): CollabArtifactRow | undefined {
+  ensureSchema();
+  return getDb()
+    .prepare('SELECT * FROM collab_artifacts WHERE id = ? AND task_id = ?')
+    .get(artifactId, taskId) as CollabArtifactRow | undefined;
 }
 
 export function appendEvent(event: CollabEvent): CollabEvent {
@@ -319,17 +351,29 @@ export function getSessionStatus(enabled: boolean, neckSessionId: string, worksp
   };
 }
 
-export function tryAcquireWorkspaceLock(workspaceRoot: string, taskId: string): boolean {
+export function tryAcquireWorkspaceLock(workspaceRoot: string, taskId: string, ttlMs = 6 * 60 * 60 * 1000): boolean {
   ensureSchema();
+  const ts = now();
+  getDb()
+    .prepare('DELETE FROM collab_locks WHERE workspace_root = ? AND lock_type = ? AND expires_at IS NOT NULL AND expires_at <= ?')
+    .run(workspaceRoot, 'write', ts);
   try {
     getDb().prepare(`
-      INSERT INTO collab_locks (id, workspace_root, task_id, lock_type, acquired_at)
-      VALUES (?, ?, ?, ?, ?)
-    `).run(randomUUID(), workspaceRoot, taskId, 'write', now());
+      INSERT INTO collab_locks (id, workspace_root, task_id, lock_type, acquired_at, owner_pid, heartbeat_at, expires_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(randomUUID(), workspaceRoot, taskId, 'write', ts, process.pid, ts, ts + ttlMs);
     return true;
   } catch {
     return false;
   }
+}
+
+export function refreshWorkspaceLock(workspaceRoot: string, taskId: string, ttlMs = 6 * 60 * 60 * 1000): void {
+  ensureSchema();
+  const ts = now();
+  getDb()
+    .prepare('UPDATE collab_locks SET owner_pid = ?, heartbeat_at = ?, expires_at = ? WHERE workspace_root = ? AND task_id = ? AND lock_type = ?')
+    .run(process.pid, ts, ts + ttlMs, workspaceRoot, taskId, 'write');
 }
 
 export function releaseWorkspaceLock(workspaceRoot: string, taskId?: string): void {
@@ -362,4 +406,53 @@ export function closeSessionsForNeckSession(neckSessionId: string): void {
       .run('closed', ts, session.id);
     releaseWorkspaceLock(session.workspace_root);
   }
+}
+
+export function recoverInterruptedCollabState(): CollabEvent[] {
+  ensureSchema();
+  const ts = now();
+  const database = getDb();
+  const interrupted = database.prepare(`
+    SELECT
+      t.id AS task_id,
+      t.current_phase AS current_phase,
+      s.id AS collab_session_id,
+      s.neck_session_id AS neck_session_id
+    FROM collab_tasks t
+    JOIN collab_sessions s ON s.id = t.collab_session_id
+    WHERE t.status NOT IN ('approved', 'failed', 'cancelled')
+  `).all() as Array<{
+    task_id: string;
+    current_phase: string;
+    collab_session_id: string;
+    neck_session_id: string;
+  }>;
+
+  const tx = database.transaction(() => {
+    database.prepare(`
+      UPDATE collab_tasks
+      SET status = 'failed', current_phase = 'failed', updated_at = ?
+      WHERE status NOT IN ('approved', 'failed', 'cancelled')
+    `).run(ts);
+    database.prepare(`
+      UPDATE collab_runs
+      SET status = 'failed', ended_at = ?
+      WHERE status IN ('pending', 'running')
+    `).run(ts);
+    database.prepare('DELETE FROM collab_locks WHERE expires_at IS NULL OR expires_at <= ? OR owner_pid IS NULL OR owner_pid != ?')
+      .run(ts, process.pid);
+  });
+  tx();
+
+  return interrupted.map(item => appendEvent({
+    sessionId: item.neck_session_id,
+    collabSessionId: item.collab_session_id,
+    taskId: item.task_id,
+    agentRole: 'neck',
+    type: 'recovered_interrupted_task',
+    phase: 'failed',
+    status: 'failed',
+    message: `上次程序退出时协同任务仍处于 ${item.current_phase}，已标记为失败并释放写锁。`,
+    createdAt: ts,
+  }));
 }
