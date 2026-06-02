@@ -48,7 +48,7 @@ export function SessionList() {
   const [sessions, setSessions] = useState<SessionItem[]>([]);
   const [groups, setGroups] = useState<SessionGroupItem[]>([]);
   const [loading, setLoading] = useState(false);
-  const { loadEntries, removeSession, startNew, switchTo, setSessionModelTo } = useChatStore();
+  const { loadEntries, removeSession, startNew, switchTo } = useChatStore();
   const toggleSessions = useAppStore(s => s.toggleSessions);
   const activeId = useChatStore(s => s.activeId);
   const localSessions = useChatStore(s => s.sessions);
@@ -126,12 +126,6 @@ export function SessionList() {
     if (localSessions[id]) {
       setSessionId(id);
       switchTo(id);
-      // 恢复此 session 的模型
-      const savedModel = localSessions[id]?.modelId || sessions.find(x => x.id === id)?.modelId;
-      if (savedModel) {
-        setSessionModelTo(id, savedModel);
-        window.electronAPI?.setSessionModel?.(id, savedModel);
-      }
       return;
     }
 

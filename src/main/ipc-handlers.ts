@@ -1204,7 +1204,7 @@ function releasePetSession(sessionId: string) {
   ipcMain.handle('session:set-model', (_event, sessionId: string, modelId: string) => {
     sessionModels.set(sessionId, modelId);
     const saved = loadSession(sessionId);
-    if (saved) saveSession({ ...saved, modelId, updatedAt: Date.now() });
+    if (saved) saveSession({ ...saved, modelId });
     const existing = sessionAgents.get(sessionId);
     if (existing) {
       const agent = createSessionAgent(sessionId, existing.getMessages());

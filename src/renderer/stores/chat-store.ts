@@ -341,18 +341,15 @@ export const useChatStore = create<ChatState>((set, get) => ({
   setSessionModelTo(sid, modelId) {
     set(state => updateSession(state, sid, ses => ({ ...ses, modelId })));
     if (get().activeId === sid) useAppStore.getState().setModel(modelId);
-    const entries = get().sessions[sid]?.entries || [];
-    if (entries.length > 0) void autoSave(sid, entries, modelId);
   },
 
   setEntryToolSummaryExpanded(sid, entryId, expanded) {
-    set(state => updateSession(state, sid, ses => {
-      const entries = ses.entries.map(e =>
+    set(state => updateSession(state, sid, ses => ({
+      ...ses,
+      entries: ses.entries.map(e =>
         e.id === entryId ? { ...e, toolSummaryExpanded: expanded } : e,
-      );
-      void autoSave(sid, entries);
-      return { ...ses, entries };
-    }));
+      ),
+    })));
   },
 
   ensureActiveSession() {

@@ -254,8 +254,8 @@ export function deleteSession(id: string): void {
 
 export function renameSession(id: string, title: string): boolean {
   const result = getDb()
-    .prepare('UPDATE sessions SET title = ?, updated_at = ? WHERE id = ?')
-    .run(title, Date.now(), id);
+    .prepare('UPDATE sessions SET title = ? WHERE id = ?')
+    .run(title, id);
   return result.changes > 0;
 }
 
@@ -303,22 +303,22 @@ export function createSessionGroup(name = '新建组'): SessionGroupData {
 
 export function renameSessionGroup(id: string, name: string): boolean {
   const result = getDb()
-    .prepare('UPDATE session_groups SET name = ?, updated_at = ? WHERE id = ?')
-    .run(name, Date.now(), id);
+    .prepare('UPDATE session_groups SET name = ? WHERE id = ?')
+    .run(name, id);
   return result.changes > 0;
 }
 
 export function setSessionGroupPinned(id: string, pinned: boolean): boolean {
   const result = getDb()
-    .prepare('UPDATE session_groups SET pinned_at = ?, updated_at = ? WHERE id = ?')
-    .run(pinned ? Date.now() : null, Date.now(), id);
+    .prepare('UPDATE session_groups SET pinned_at = ? WHERE id = ?')
+    .run(pinned ? Date.now() : null, id);
   return result.changes > 0;
 }
 
 export function setSessionGroupCollapsed(id: string, collapsed: boolean): boolean {
   const result = getDb()
-    .prepare('UPDATE session_groups SET collapsed = ?, updated_at = ? WHERE id = ?')
-    .run(collapsed ? 1 : 0, Date.now(), id);
+    .prepare('UPDATE session_groups SET collapsed = ? WHERE id = ?')
+    .run(collapsed ? 1 : 0, id);
   return result.changes > 0;
 }
 
@@ -329,11 +329,8 @@ export function setSessionGroup(sessionId: string, groupId: string | null): bool
     if (!group) return false;
   }
   const result = database
-    .prepare('UPDATE sessions SET group_id = ?, updated_at = ? WHERE id = ?')
-    .run(groupId, Date.now(), sessionId);
-  if (groupId) {
-    database.prepare('UPDATE session_groups SET updated_at = ? WHERE id = ?').run(Date.now(), groupId);
-  }
+    .prepare('UPDATE sessions SET group_id = ? WHERE id = ?')
+    .run(groupId, sessionId);
   return result.changes > 0;
 }
 

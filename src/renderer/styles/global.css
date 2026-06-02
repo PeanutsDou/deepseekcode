@@ -168,6 +168,7 @@ html, body {
   display: flex;
   flex-direction: column;
   height: 100%;
+  padding-top: 38px;
   overflow: hidden;
   background: var(--bg-primary);
 }
@@ -175,6 +176,11 @@ html, body {
 /* ===== Layout ===== */
 
 .toolbar {
+  position: fixed;
+  z-index: 900;
+  top: 0;
+  left: 0;
+  right: 0;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -183,18 +189,31 @@ html, body {
   background: var(--bg-secondary);
   flex-shrink: 0;
   user-select: none;
-  -webkit-app-region: drag;
+  -webkit-app-region: drag !important;
 }
 
 .toolbar-left, .toolbar-right {
   display: flex;
   align-items: center;
   gap: 6px;
+  -webkit-app-region: drag !important;
 }
 
 .toolbar-center {
   flex: 1;
   height: 100%;
+  -webkit-app-region: drag !important;
+}
+
+.toolbar button,
+.toolbar input,
+.toolbar select,
+.toolbar textarea,
+.toolbar [role="button"],
+.toolbar .appearance-menu,
+.window-controls,
+.window-controls * {
+  -webkit-app-region: no-drag;
 }
 
 .toolbar-icon {
@@ -209,6 +228,12 @@ html, body {
   font-weight: 500;
   color: var(--text-secondary);
   letter-spacing: 0.3px;
+}
+
+.toolbar-version {
+  margin-left: 8px;
+  color: var(--text-muted);
+  font-size: 11px;
 }
 
 .toolbar-btn {
@@ -444,6 +469,8 @@ html, body {
   overflow: hidden;
   background: var(--bg-secondary);
   position: relative;
+  z-index: 0;
+  contain: paint;
 }
 
 .chat-main {
@@ -457,12 +484,6 @@ html, body {
   position: relative;
 }
 
-.chat-main,
-.chat-panel,
-.chat-messages,
-.chat-messages-virtuoso,
-.chat-messages-virtuoso [data-virtuoso-scroller],
-.chat-messages-virtuoso [data-viewport-type],
 .virtual-message-row,
 .virtual-message-row *,
 .virtual-message-footer,
@@ -955,14 +976,12 @@ html, body {
   overflow: hidden;
   padding: 0;
   user-select: text;
-  -webkit-app-region: no-drag;
 }
 
 .chat-messages-virtuoso {
   height: 100%;
   width: 100%;
   user-select: text;
-  -webkit-app-region: no-drag;
 }
 
 .virtual-message-row {
